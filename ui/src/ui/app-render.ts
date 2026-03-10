@@ -50,7 +50,7 @@ import {
   updateSkillEnabled,
 } from "./controllers/skills";
 import { icons } from "./icons";
-import { TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation";
+import { VISIBLE_TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation";
 import { renderAgents } from "./views/agents";
 import { renderChannels } from "./views/channels";
 import { renderChat } from "./views/chat";
@@ -139,7 +139,7 @@ export function renderApp(state: AppViewState) {
         </div>
       </header>
       <aside class="nav ${state.settings.navCollapsed ? "nav--collapsed" : ""}">
-        ${TAB_GROUPS.map((group) => {
+        ${VISIBLE_TAB_GROUPS.map((group) => {
           const isGroupCollapsed = state.settings.navGroupsCollapsed[group.label] ?? false;
           const hasActiveTab = group.tabs.some((tab) => tab === state.tab);
           return html`

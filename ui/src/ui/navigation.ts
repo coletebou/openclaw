@@ -10,6 +10,14 @@ export const TAB_GROUPS = [
   { label: "Settings", tabs: ["config", "debug", "logs"] },
 ] as const;
 
+const hiddenTabs: string[] =
+  typeof window !== "undefined" ? (window as any).__OPENCLAW_HIDDEN_TABS__ || [] : [];
+
+export const VISIBLE_TAB_GROUPS = TAB_GROUPS.map((group) => ({
+  ...group,
+  tabs: group.tabs.filter((tab: string) => !hiddenTabs.includes(tab)),
+})).filter((group) => group.tabs.length > 0);
+
 export type Tab =
   | "agents"
   | "overview"

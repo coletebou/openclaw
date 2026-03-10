@@ -70,6 +70,8 @@ export type GatewayControlUiConfig = {
   allowInsecureAuth?: boolean;
   /** DANGEROUS: Disable device identity checks for the Control UI (default: false). */
   dangerouslyDisableDeviceAuth?: boolean;
+  /** Tab names to hide from the Control UI navigation (e.g. ["config", "debug", "nodes"]). */
+  hiddenTabs?: string[];
 };
 
 export type GatewayAuthMode = "token" | "password";
