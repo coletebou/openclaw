@@ -156,6 +156,7 @@ export function resolveSettledTurnFinalizationRequest(input: {
     allowEmptyStopContinuation: true,
     payloadCount,
     hasTerminalToolPresentation: input.hasTerminalToolPresentation,
+    privateFinalText: input.runParams.sourceReplyDeliveryMode === "message_tool_only",
     aborted: terminalAborted,
     timedOut: terminalTimedOut,
     attempt: input.attempt,

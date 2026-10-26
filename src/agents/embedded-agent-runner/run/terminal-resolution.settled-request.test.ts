@@ -117,12 +117,16 @@ describe("resolveSettledTurnFinalizationRequest", () => {
       currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
     });
     const terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
-    const request = (terminalReplyExpectation: "required" | "optional" | "result-required") =>
+    const request = (
+      terminalReplyExpectation: "required" | "optional" | "result-required",
+      sourceReplyDeliveryMode?: "message_tool_only",
+    ) =>
       resolveSettledTurnFinalizationRequest({
         runParams: {
           sessionId: "session:settled",
           runId: "run:settled",
           terminalReplyExpectation,
+          sourceReplyDeliveryMode,
         } as never,
         attempt,
         activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
@@ -135,6 +139,10 @@ describe("resolveSettledTurnFinalizationRequest", () => {
       });
 
     expect(request("required")).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    // The answered finalizer is delivered even when normal final text stays private.
+    expect(request("required", "message_tool_only")).toBe(
+      `${SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION} Unlike your normal final text, this reply is posted to the conversation as written.`,
+    );
     expect(request("optional")).toBeNull();
     expect(request("result-required")).toBe(REQUIRED_RESULT_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
     expect(

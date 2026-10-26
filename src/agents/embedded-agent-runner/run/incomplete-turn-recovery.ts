@@ -55,6 +55,8 @@ const REQUIRED_RESULT_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "Your turn ended without a final result. Continue from the current transcript and produce the required result now. NO_REPLY is not allowed. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
 const READ_ONLY_TOOL_CONTINUATION_INSTRUCTION =
   "Your turn ended before completing the task. Continue from the current transcript, using tools for any remaining work, then produce the final reply. Do not repeat completed tool calls or restart from scratch.";
+const POSTED_FINALIZATION_NOTICE =
+  "Unlike your normal final text, this reply is posted to the conversation as written.";
 const OUTPUT_LIMIT_FINALIZATION_INSTRUCTION =
   "Your previous turn was cut off at the output token limit before it finished, so the task may be incomplete. Report only what the tool results show was done, and say plainly what was not finished. Do not describe unfinished steps as done.";
 
@@ -345,6 +347,8 @@ export function resolveSettledToolTerminalContinuation(
     replyDeliveryState: ReplyDeliveryState;
     payloadCount: number;
     hasTerminalToolPresentation?: boolean;
+    /** Normal final text stays private (message_tool_only), yet a text-only answer is posted. */
+    privateFinalText?: boolean;
   },
 ): { instruction: string; disableTools: boolean } | null {
   const { attempt } = params;
@@ -421,7 +425,7 @@ export function resolveSettledToolTerminalContinuation(
     : `${resultRequired ? REQUIRED_RESULT_TOOL_TERMINAL_CONTINUATION_INSTRUCTION : SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION}${
         // A tool-free summary of a cut-off turn cannot finish the work, so it must not certify it.
         isSettledTurnCutOffByOutputLimit(attempt) ? ` ${OUTPUT_LIMIT_FINALIZATION_INSTRUCTION}` : ""
-      }`;
+      }${params.privateFinalText ? ` ${POSTED_FINALIZATION_NOTICE}` : ""}`;
   return {
     // An earlier failure the turn never recovered from may not block the summary,
     // but the summary must still account for it.
