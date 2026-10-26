@@ -5,6 +5,7 @@ import {
 } from "../../agents/reply-completion.js";
 import { isRuntimeToolAllowed } from "../../agents/tool-policy-match.js";
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
+import { classifySilentReplyConversationType } from "../../shared/silent-reply-policy.js";
 import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, isReplyPayloadTerminalContent } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
@@ -30,6 +31,14 @@ export function resolveStrandedReplyRecovery(params: {
   successfulSourceReplyDelivery: boolean;
   isRoomEvent: boolean;
 }): StrandedReplyRecovery {
+  // A group or channel turn that may end silently keeps its final text private: re-running it to
+  // deliver that text posted the model's private note into the group.
+  if (
+    params.base.run.terminalReplyExpectation === "optional" &&
+    classifySilentReplyConversationType({ sessionKey: params.base.run.sessionKey }) === "group"
+  ) {
+    return { kind: "none" };
+  }
   // Host-owned payloads can still be awaiting transport when completion bookkeeping runs.
   if (
     !isStrandedPrivateMessageToolFinal({

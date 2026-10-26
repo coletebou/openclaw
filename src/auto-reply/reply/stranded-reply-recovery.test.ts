@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { attachToolAllowlistIntersection } from "../../agents/tool-policy-shared.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
+import { isStrandedPrivateMessageToolFinal } from "./private-message-tool-final.js";
 import { completeFollowupRunLifecycle, markFollowupRunEnqueued } from "./queue/lifecycle.js";
 import type { ReplyOperationRunState } from "./reply-operation-run-state.js";
 import { resolveStrandedReplyRecovery } from "./stranded-reply-recovery.js";
 import { createMockFollowupRun } from "./test-helpers.js";
+
+vi.mock("./private-message-tool-final.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./private-message-tool-final.js")>();
+  return {
+    ...actual,
+    isStrandedPrivateMessageToolFinal: vi.fn(actual.isStrandedPrivateMessageToolFinal),
+  };
+});
 
 function recover(overrides: Partial<Parameters<typeof resolveStrandedReplyRecovery>[0]> = {}) {
   return resolveStrandedReplyRecovery({
@@ -169,4 +178,50 @@ describe("resolveStrandedReplyRecovery", () => {
   ])("does not recover $label", (override) => {
     expect(recover(override)).toEqual({ kind: "none" });
   });
+});
+
+describe("resolveStrandedReplyRecovery for optional group turns", () => {
+  const strandedFinalCheck = vi.mocked(isStrandedPrivateMessageToolFinal);
+  const recoverTurn = (sessionKey: string, terminalReplyExpectation: "optional" | "required") =>
+    recover({
+      base: createMockFollowupRun({
+        prompt: "question",
+        run: { sessionKey, terminalReplyExpectation },
+      }),
+    });
+
+  beforeEach(() => {
+    strandedFinalCheck.mockClear();
+  });
+
+  it.each([
+    "agent:main:imessage:group:chat0101",
+    "agent:main:discord:channel:4242",
+    "agent:main:imessage:GROUP:chat0101",
+  ])("keeps the private final of an optional turn in %s private", (sessionKey) => {
+    expect(recoverTurn(sessionKey, "optional")).toEqual({ kind: "none" });
+    // Decided before the stranded-final check, whatever expectation that check would resolve.
+    expect(strandedFinalCheck).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "required group",
+      sessionKey: "agent:main:imessage:group:chat0101",
+      terminalReplyExpectation: "required",
+      expected: "retry",
+    },
+    {
+      label: "optional direct",
+      sessionKey: "agent:main:imessage:direct:+15555550101",
+      terminalReplyExpectation: "optional",
+      expected: "none",
+    },
+  ] as const)(
+    "keeps the existing recovery for a $label turn",
+    ({ sessionKey, terminalReplyExpectation, expected }) => {
+      expect(recoverTurn(sessionKey, terminalReplyExpectation).kind).toBe(expected);
+      expect(strandedFinalCheck).toHaveBeenCalledTimes(1);
+    },
+  );
 });
