@@ -17,7 +17,7 @@ export async function resolveAuthorizedIMessageActionReference(params: {
   messageId?: string;
   inputChatContext: IMessageChatContext;
   requireFromMe?: boolean;
-  resolveFallbackMessageId: (chatContext: IMessageChatContext) => string;
+  resolveFallbackMessageId: (chatContext: IMessageChatContext) => Promise<string>;
   resolveMessageId: ResolveMessageId;
   authorize: AuthorizeMessageReference;
   authorization: Omit<Parameters<AuthorizeMessageReference>[0], "chatContext" | "messageId">;
@@ -27,7 +27,8 @@ export async function resolveAuthorizedIMessageActionReference(params: {
     chatContext: params.inputChatContext,
     ...(params.requireFromMe ? { requireFromMe: true } : {}),
   };
-  const rawMessageId = params.messageId ?? params.resolveFallbackMessageId(params.inputChatContext);
+  const rawMessageId =
+    params.messageId ?? (await params.resolveFallbackMessageId(params.inputChatContext));
   const messageId = await params.resolveMessageId(rawMessageId, options);
   const authorize = (authorizedMessageId: string, chatContext: IMessageChatContext) =>
     params.authorize({ ...params.authorization, messageId: authorizedMessageId, chatContext });

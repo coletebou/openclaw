@@ -334,9 +334,13 @@ function buildFromMeError(inputId: string, inputKind: "short" | "uuid"): Error {
   );
 }
 
-/** Latest recent entry with a positive same-account conversation match; never guess a chat. */
+/**
+ * Latest recent entry from one side of a positive same-account conversation match; never guess a
+ * chat. The agent's own sends share the cache with inbound messages, so callers pick a side.
+ */
 export function findLatestIMessageEntryForChat(
   ctx: IMessageChatContext & { accountId?: string },
+  side: { fromMe: boolean },
 ): IMessageReplyCacheEntry | undefined {
   if (!hasChatScope(ctx) || !ctx.accountId) {
     return undefined;
@@ -348,6 +352,9 @@ export function findLatestIMessageEntryForChat(
       continue;
     }
     if (entry.timestamp < cutoff) {
+      continue;
+    }
+    if ((entry.isFromMe === true) !== side.fromMe) {
       continue;
     }
     if (resolveIMessageChatMatch(entry, ctx) !== "match") {

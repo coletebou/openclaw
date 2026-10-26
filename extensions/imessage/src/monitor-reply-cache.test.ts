@@ -92,8 +92,20 @@ it("returns the latest entry for the matching chat scope", async () => {
   await remember("newest", directChat);
 
   expect(
-    cache.latest({ accountId: "default", chatIdentifier: "iMessage;-;+12069106512" })?.messageId,
+    cache.latest(
+      { accountId: "default", chatIdentifier: "iMessage;-;+12069106512" },
+      { fromMe: false },
+    )?.messageId,
   ).toBe("newest");
+});
+
+it.each([false, true])("skips a newer entry from the other side (fromMe: %s)", async (fromMe) => {
+  await remember("wanted", { ...directChat, isFromMe: fromMe, timestamp: Date.now() - 1000 });
+  await remember("other-side", { ...directChat, isFromMe: !fromMe });
+
+  expect(cache.latest({ accountId: "default", ...directChat }, { fromMe })?.messageId).toBe(
+    "wanted",
+  );
 });
 
 it.each([
@@ -107,7 +119,7 @@ it.each([
   ["missing account", {}, directChat],
 ] as const)("does not guess the latest message for %s", async (_, entry, query) => {
   await remember("message", { ...directChat, ...entry });
-  expect(cache.latest(query)).toBeUndefined();
+  expect(cache.latest(query, { fromMe: false })).toBeUndefined();
 });
 
 it("persists concurrent updates without reallocating a message short id", async () => {

@@ -56,6 +56,9 @@ vi.mock("./monitor-reply-cache.js", async () => ({
   rememberIMessageReplyCache: rememberIMessageReplyCacheMock,
 }));
 const { imessageMessageActions } = await import("./actions.js");
+const replyCache = await vi.importActual<typeof import("./monitor-reply-cache.js")>(
+  "./monitor-reply-cache.js",
+);
 
 const chatGuid = "iMessage;+;chat0000";
 const message = { chatGuid, messageId: "message-guid" };
@@ -385,6 +388,43 @@ describe("imessage message actions", () => {
       reaction: "like",
     });
   });
+
+  it.each([
+    ["react", "current-guid", { emoji: "👍" }, { currentMessageId: "current-guid" }],
+    ["react", "later-guid", { emoji: "👍" }, {}],
+    ["edit", "own-guid", { text: "fixed" }, { currentMessageId: "later-guid" }],
+  ] as const)(
+    "points an omitted %s messageId at %s",
+    async (action, expected, actionParams, toolContext) => {
+      const chat = `iMessage;+;fallback-${expected}`;
+      // The agent's own sends share the reply cache with inbound messages; ages are in ms.
+      const entries: Array<[string, boolean, number]> =
+        action === "edit"
+          ? [
+              ["own-guid", true, 1000],
+              ["later-guid", false, 0],
+            ]
+          : [
+              ["current-guid", false, 2000],
+              ["later-guid", false, 1000],
+              ["own-guid", true, 0],
+            ];
+      for (const [messageId, isFromMe, age] of entries) {
+        await replyCache.rememberIMessageReplyCache({
+          accountId: "default",
+          messageId,
+          chatGuid: chat,
+          isFromMe,
+          timestamp: Date.now() - age,
+        });
+      }
+      await run(action, { chatGuid: chat, ...actionParams }, { toolContext });
+      expectCall(action === "edit" ? runtimeMock.editMessage : runtimeMock.sendReaction, {
+        chatGuid: chat,
+        messageId: expected,
+      });
+    },
+  );
 
   it("delivers hydrated URL-safe reply bytes with a default filename and caches the reply", async () => {
     attachmentBridge();

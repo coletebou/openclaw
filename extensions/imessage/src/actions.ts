@@ -140,16 +140,32 @@ function createIMessageTargetAliases(resourceAliases: string[] = []) {
   };
 }
 
-/** An omitted action reference targets the most recent inbound in the same chat. */
-function readMessageIdWithChatFallback(
+/**
+ * An omitted action reference targets the current inbound message when it belongs to this chat,
+ * then the newest inbound one. Edit and unsend need the agent's own message, so they take its
+ * newest send instead.
+ */
+async function readMessageIdWithChatFallback(
   params: Record<string, unknown>,
   chatContext: IMessageChatContext & { accountId: string },
-): string {
+  { currentMessageId, fromMe }: { currentMessageId?: string | number; fromMe: boolean },
+): Promise<string> {
   const explicit = readStringParam(params, "messageId");
   if (explicit) {
     return explicit;
   }
-  const latest = findLatestIMessageEntryForChat(chatContext);
+  if (
+    !fromMe &&
+    currentMessageId !== undefined &&
+    (await isIMessageCurrentMessageInChatAsync({
+      accountId: chatContext.accountId,
+      currentMessageId,
+      chatContext,
+    }))
+  ) {
+    return String(currentMessageId);
+  }
+  const latest = findLatestIMessageEntryForChat(chatContext, { fromMe });
   if (latest?.messageId) {
     return latest.messageId;
   }
@@ -393,7 +409,14 @@ export const imessageMessageActions: ChannelMessageActionAdapter = {
         inputChatContext,
         requireFromMe: input?.requireFromMe,
         resolveFallbackMessageId: (chatContext) =>
-          readMessageIdWithChatFallback(params, { ...chatContext, accountId: account.accountId }),
+          readMessageIdWithChatFallback(
+            params,
+            { ...chatContext, accountId: account.accountId },
+            {
+              currentMessageId: toolContext?.currentMessageId,
+              fromMe: input?.requireFromMe === true,
+            },
+          ),
         resolveMessageId: runtime.resolveIMessageMessageId,
         resolveChatGuid: chatGuid,
         authorize: (authorization) => runtime.authorizeMessageReference(authorization),
