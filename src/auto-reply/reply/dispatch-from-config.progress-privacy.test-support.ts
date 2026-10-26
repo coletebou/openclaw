@@ -49,6 +49,8 @@ export function registerProgressPrivacyTests() {
   ])(
     "keeps optional $surface draft progress private (mentioned: $mentioned)",
     async ({ surface, mentioned }) => {
+      // Mentioned group turns require a reply only under BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY=1.
+      vi.stubEnv("BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY", "1");
       const dispatcher = quietSession();
       const onItemEvent = vi.fn(),
         onToolStart = vi.fn(),

@@ -133,7 +133,12 @@ export function resolveSourceReplyExpectation(params: {
   if (
     conversationType === "group" &&
     // Thread participation admits the message but does not explicitly request a reply.
-    (params.ctx.WasMentioned !== true || params.ctx.MentionSource === "implicit_thread") &&
+    (params.ctx.WasMentioned !== true ||
+      params.ctx.MentionSource === "implicit_thread" ||
+      // A mention no longer requires a reply: patterns such as the agent's name or "bot" match
+      // much of a busy group's traffic and forced replies there. Only direct chats may require
+      // one; BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY set to exactly "1" restores the mention rule.
+      process.env.BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY !== "1") &&
     resolveSilentReplySettings({
       cfg: params.cfg,
       surface: params.ctx.Surface ?? params.ctx.Provider,

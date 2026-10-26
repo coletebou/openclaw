@@ -1,4 +1,4 @@
-import { describe, expect, it, type Mock } from "vitest";
+import { describe, expect, it, type Mock, vi } from "vitest";
 import type { RunEmbeddedAgentInternalParams as AgentRunParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import { FailoverError } from "../../agents/failover-error.js";
 import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
@@ -77,6 +77,8 @@ export function registerImmediateFailurePolicyCases({
       { label: "mentioned group", sessionCtx: { WasMentioned: true }, visible: true },
       { label: "direct request", sessionCtx: { ChatType: "direct" }, visible: true },
     ])("settles a generic failure before output for an $label", async ({ sessionCtx, visible }) => {
+      // Mentioned group turns require a reply only under BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY=1.
+      vi.stubEnv("BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY", "1");
       state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
         throw new Error("opaque-private-runner-detail");
       });

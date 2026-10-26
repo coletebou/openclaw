@@ -293,6 +293,8 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
   ] as const)(
     "settles an adopted %s failure (progress=%s, mentioned=%s, origin=%s)",
     async (chatType, progress, mentioned, origin, expectedFinal) => {
+      // Mentioned group turns require a reply only under BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY=1.
+      vi.stubEnv("BADCLAW_GROUP_MENTIONS_REQUIRE_REPLY", "1");
       const surface = origin === "webchat" ? "webchat" : "slack";
       sessionStoreMocks.currentEntry = { verboseLevel: "on" };
       const resolverError = new Error("private synthetic failure detail");
