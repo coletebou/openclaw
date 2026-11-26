@@ -23,6 +23,7 @@ export type {
   RealtimeVoiceBrowserSessionCreateRequest,
   RealtimeVoiceGatewayControl,
   RealtimeVoiceBridgeCreateRequest,
+  RealtimeVoiceImageInput,
   RealtimeVoiceProviderCapabilities,
   RealtimeVoiceCloseReason,
   RealtimeVoiceProviderConfig,
