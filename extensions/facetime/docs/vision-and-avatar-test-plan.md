@@ -38,10 +38,10 @@ live install.
 | A session forwards images only while open and only to a provider that takes them            | `src/talk/session-runtime.test.ts`                              |
 | `gpt-realtime-2.1-mini` accepts a JPEG and describes it                                     | `extensions/openai/realtime-voice-provider.live.test.ts` (live) |
 | Observers learn when the caller hears each chunk, and when queued speech is discarded       | `tests/audio-pump.test.ts`                                      |
-| Silence, back vowels, front vowels, hiss, and loudness map to distinct mouth shapes         | `tests/avatar-lipsync.test.ts`                                  |
-| The page is served with a no-external-load policy; viewers get state, shapes, and clear     | `tests/avatar-feed.test.ts` (real loopback HTTP and WebSocket)  |
+| Silence, a lone quiet voice, and loudness against recent speech map to voice levels         | `tests/avatar-voice-level.test.ts`                              |
+| The page and its video are served to local viewers; viewers get state, levels, and clear    | `tests/avatar-feed.test.ts` (real loopback HTTP and WebSocket)  |
 | The feed is view-only and refuses proxied requests                                          | `tests/avatar-feed.test.ts`                                     |
-| The package ships the avatar page and still contains no native binary                       | `tests/package-manifest.test.ts`                                |
+| The package ships the avatar page and video and still contains no native binary             | `tests/package-manifest.test.ts`                                |
 
 ## What only a live call can prove
 
@@ -56,7 +56,7 @@ the next section.
   accepts and reads a JPEG, with a synthetic two-color image.
 - How long a look takes on a call, and what it costs.
 - OBS renders the avatar page and FaceTime shows it to the caller.
-- Lip sync lines up with the audio the caller hears, and at which `offsetMs`.
+- The light lines up with the audio the caller hears, and at which `offsetMs`.
 - Gateway CPU and thermal load with capture and OBS running through a long call.
 
 ## Approvals needed before live enablement
@@ -102,30 +102,32 @@ depends on the earlier ones. Vision and avatar are independent and can be run al
 2. In a browser on the Mac, open
    `http://127.0.0.1:<gateway port>/facetime/avatar?demo=1`. The default port is
    `18789`.
-   Expected: the character breathes, blinks, and talks in bursts.
+   Expected: a head made of fine blue filaments sways slowly and lights up warm from
+   inside in bursts, as if speaking. A soft blue glow with no head means this
+   build was packed without the rendered loop video.
 3. Open the same URL without `?demo=1`.
-   Expected: the character is dimmed and silent, still breathing and blinking.
+   Expected: the head is dimmer and stays cool blue, still swaying.
 4. From another machine, request `http://<mac address>:<gateway port>/facetime/avatar`.
    Expected: `403 Forbidden`, or no route if the Gateway only listens on loopback.
 5. In OBS, add a **Browser** source: URL
-   `http://127.0.0.1:<gateway port>/facetime/avatar`, width 1280, height 720, 30 FPS.
+   `http://127.0.0.1:<gateway port>/facetime/avatar`, width 1920, height 1080, 30 FPS.
    Turn off "Shutdown source when not visible". Hide or remove the static placeholder.
-   Expected: the idle character fills the OBS preview.
+   Expected: the idle head fills the OBS preview.
 6. Confirm OBS Virtual Camera is started and FaceTime's video input is still the OBS
    camera.
 
 ### Avatar, on a call
 
 7. Call the agent with FaceTime video from an allowed handle.
-   Expected: the caller sees the character brighten when the call connects and its
-   mouth move while the agent speaks.
+   Expected: the caller sees the head brighten when the call connects and light up
+   warm from inside while the agent speaks.
 8. Interrupt the agent mid-sentence.
-   Expected: the mouth closes at once.
-9. Watch lip sync. If the mouth leads or trails the voice, add `&offsetMs=<n>` to the
-   OBS source URL: positive delays the mouth, negative advances it. Try steps of 50.
-   Record the value that works.
+   Expected: the light goes out within a fraction of a second.
+9. Watch the timing. If the light clearly leads or trails the voice, add
+   `&offsetMs=<n>` to the OBS source URL: positive delays the light, negative
+   advances it. Try steps of 100. Record the value that works.
 10. End the call.
-    Expected: the character dims back to idle within a second.
+    Expected: the head dims back to idle within a second.
 
 ### Vision, without a call
 

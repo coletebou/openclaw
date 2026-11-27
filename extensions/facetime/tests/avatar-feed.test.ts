@@ -1,16 +1,21 @@
 import { once } from "node:events";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import { WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createFaceTimeAvatarFeed, type FaceTimeAvatarFeed } from "../src/avatar-feed.js";
 
-const pluginRoot = resolve(fileURLToPath(import.meta.url), "..", "..");
+const shippedPage = resolve(fileURLToPath(import.meta.url), "..", "..", "assets", "avatar.html");
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+// The start of an MP4 file: a box length, "ftyp", then the brand.
+const LOOP_STUB = Buffer.from("\0\0\0\x18ftypisom\0\0\0\0isomavc1", "latin1");
 
-// 100 ms of a loud 300 Hz tone: five complete lip-sync hops.
+// 100 ms of a loud 300 Hz tone: five complete voice-level hops.
 function speech(): Buffer {
   const audio = Buffer.alloc(2_400 * 2);
   for (let index = 0; index < 2_400; index += 1) {
@@ -28,7 +33,15 @@ describe("FaceTime avatar feed", () => {
   let port: number;
   const sockets: WebSocket[] = [];
 
+  let loopFile: string;
+
   beforeEach(async () => {
+    // The shipped page beside a stand-in for the loop video, which is rendered at build time.
+    const pluginRoot = tempDirs.make("openclaw-facetime-avatar-");
+    mkdirSync(join(pluginRoot, "assets"));
+    copyFileSync(shippedPage, join(pluginRoot, "assets", "avatar.html"));
+    loopFile = join(pluginRoot, "assets", "avatar-loop.mp4");
+    writeFileSync(loopFile, LOOP_STUB);
     feed = createFaceTimeAvatarFeed({ pluginRoot });
     server = createServer((req, res) => void feed.handleRequest(req, res));
     server.on("upgrade", (req, socket, head) => feed.handleUpgrade(req, socket, head));
@@ -45,9 +58,9 @@ describe("FaceTime avatar feed", () => {
     await once(server, "close");
   });
 
-  const get = (method: string, headers: IncomingHttpHeaders = {}) =>
+  const get = (method: string, headers: IncomingHttpHeaders = {}, path = "/facetime/avatar") =>
     new Promise<{ status: number; headers: IncomingHttpHeaders; body: string }>((done, fail) => {
-      const req = request({ host: "127.0.0.1", port, path: "/facetime/avatar", method, headers });
+      const req = request({ host: "127.0.0.1", port, path, method, headers });
       req.on("error", fail);
       req.on("response", (res) => {
         let body = "";
@@ -97,7 +110,7 @@ describe("FaceTime avatar feed", () => {
     expect(page.status).toBe(200);
     expect(page.headers["content-type"]).toBe("text/html; charset=utf-8");
     expect(page.headers["content-security-policy"]).toBe(
-      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; media-src blob:",
     );
     expect(page.headers["cache-control"]).toBe("no-store");
     expect(page.body).toContain("<canvas");
@@ -105,7 +118,25 @@ describe("FaceTime avatar feed", () => {
     expect((await get("POST")).status).toBe(405);
   });
 
-  it("streams call state and scheduled mouth shapes to a viewer and closes the mouth on clear", async () => {
+  it("serves the loop video the page plays, to local viewers only", async () => {
+    const path = "/facetime/avatar/loop.mp4";
+    const loop = await get("GET", {}, path);
+
+    expect(loop.status).toBe(200);
+    expect(loop.headers["content-type"]).toBe("video/mp4");
+    expect(loop.headers["content-length"]).toBe(String(LOOP_STUB.byteLength));
+    expect(loop.body).toBe(LOOP_STUB.toString("utf8"));
+    const head = await get("HEAD", {}, path);
+    expect(head.headers["content-length"]).toBe(loop.headers["content-length"]);
+    expect(head.body).toBe("");
+    expect((await get("GET", { "x-forwarded-for": "203.0.113.7" }, path)).status).toBe(403);
+
+    // A package built without the rendered video: the page falls back to a plain glow.
+    rmSync(loopFile);
+    expect((await get("GET", {}, path)).status).toBe(404);
+  });
+
+  it("streams call state and scheduled voice levels to a viewer and clears them on clear", async () => {
     const viewer = watch();
     expect(await viewer.next()).toEqual({ type: "hello", now: expect.any(Number), call: "idle" });
 
@@ -116,15 +147,12 @@ describe("FaceTime avatar feed", () => {
     feed.sink.setCallActive(false);
 
     expect(await viewer.next()).toEqual({ type: "call", state: "active" });
-    const speak = (await viewer.next()) as { frames: number[] };
-    expect(speak).toEqual({
+    expect(await viewer.next()).toEqual({
       type: "speak",
       at: 1_700_000_000_123,
       hopMs: 20,
-      frames: expect.any(Array),
+      levels: [100, 100, 100, 100, 100],
     });
-    expect(speak.frames).toHaveLength(10);
-    expect(speak.frames[0]).toBeGreaterThan(50);
     expect(await viewer.next()).toEqual({ type: "clear" });
     expect(await viewer.next()).toEqual({ type: "call", state: "idle" });
 

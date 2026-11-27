@@ -3,10 +3,10 @@
 Two opt-in additions to the FaceTime voice carrier. Both are off by default and do
 nothing until their flag is set.
 
-| Flag             | Default | What it turns on                                                               |
-| ---------------- | ------- | ------------------------------------------------------------------------------ |
-| `vision.enabled` | `false` | The agent can look at the caller's FaceTime video: camera or shared screen.    |
-| `avatar.enabled` | `false` | A lip-synced animated avatar page for OBS, which feeds FaceTime's video input. |
+| Flag             | Default | What it turns on                                                              |
+| ---------------- | ------- | ----------------------------------------------------------------------------- |
+| `vision.enabled` | `false` | The agent can look at the caller's FaceTime video: camera or shared screen.   |
+| `avatar.enabled` | `false` | A voice-lit animated avatar page for OBS, which feeds FaceTime's video input. |
 
 The flags live under `plugins.entries.facetime.config`. The carrier stays audio-safe:
 neither feature can fail, delay, or end a call. Anything that goes wrong in them is
@@ -30,7 +30,7 @@ flowchart LR
     vpump["video-capture.ts<br/>newest frame, in memory"]
     look["talk-vision.ts<br/>facetime_look tool"]
     pump["audio-pump.ts<br/>playback clock"]
-    lips["avatar-lipsync.ts"]
+    lips["avatar-voice-level.ts"]
     feed["avatar-feed.ts<br/>/facetime/avatar"]
   end
   subgraph provider["Realtime provider"]
@@ -44,7 +44,7 @@ flowchart LR
   look -- "sendImage, then tool result" --> rt
   rt -- "speech PCM" --> pump
   pump -- "chunk + time the caller hears it" --> lips
-  lips -- "mouth shapes" --> feed
+  lips -- "voice levels" --> feed
   feed -- "loopback WebSocket" --> obs
   obs -- "virtual camera" --> cam
 ```
@@ -56,8 +56,9 @@ flowchart LR
 | Look tool and what the model is told | `src/talk-vision.ts`, `src/talk-driver-config.ts`             |
 | Image input on a realtime session    | `RealtimeVoiceBridge.sendImage` (SDK), OpenAI realtime bridge |
 | Playback timeline                    | `src/audio-pump.ts` (unchanged owner; now observable)         |
-| Speech to mouth shapes               | `src/avatar-lipsync.ts`                                       |
-| Avatar page and viewer feed          | `src/avatar-feed.ts`, `assets/avatar.html`                    |
+| Speech to voice level                | `src/avatar-voice-level.ts`                                   |
+| Avatar page, video and viewer feed   | `src/avatar-feed.ts`, `assets/avatar.html`, `avatar-loop.mp4` |
+| Rendering the loop video             | `scripts/avatar-loop/` (offline, not shipped)                 |
 
 ## Vision
 
@@ -195,45 +196,57 @@ install directory. It has no configurable path.
    hears each chunk of model speech. It now reports two events: each accepted chunk
    with the wall-clock time at which it starts playing, and each discard (barge-in,
    suspension, stop).
-2. **Speech to mouth shapes.** `avatar-lipsync.ts` turns each PCM chunk into one
-   mouth shape per 20 ms: jaw openness (0-100) and mouth width (-100 rounded to
-   100 spread). Openness follows loudness relative to a slowly decaying peak. Width
-   follows the balance of energy above and below about 900 Hz, which separates
-   "oo"-like from "ee"-like sounds. Hiss-like sounds nearly close the jaw. It costs
-   under 1 ms per second of audio and uses no model, weights, or GPU.
-3. **Feed.** `avatar-feed.ts` broadcasts the shapes, with their play time, to viewers
-   over a WebSocket on the Gateway route `/facetime/avatar`. A `clear` message closes
-   the mouth the moment speech is interrupted.
-4. **Renderer.** `assets/avatar.html` is one self-contained page: Canvas 2D, no
-   external requests. It draws a stylized character that breathes, blinks, and moves
-   its eyes when idle, and schedules mouth shapes against the same clock the audio
-   uses.
+2. **Speech to voice level.** `avatar-voice-level.ts` turns each PCM chunk into one
+   level (0-100) per 20 ms: loudness relative to a slowly decaying peak, so a quiet
+   voice still lights the avatar. It costs under 1 ms per second of audio and uses
+   no model, weights, or GPU.
+3. **Feed.** `avatar-feed.ts` broadcasts the levels, with their play time, to viewers
+   over a WebSocket on the Gateway route `/facetime/avatar`. A `clear` message puts
+   the light out the moment speech is interrupted.
+4. **Renderer.** `assets/avatar.html` plays `assets/avatar-loop.mp4`, a 12 second
+   seamless loop of an abstract head made of fine filaments that sways slowly. Each
+   video frame stacks two pictures of the same moment: the dim head on top, and only
+   the light it emits below. A small WebGL shader adds the lower picture to the upper
+   one in proportion to the voice level, so the head glows from inside while the
+   agent speaks. The page makes no external requests.
 5. **Into the call.** OBS shows the page as a browser source. OBS Virtual Camera,
    already FaceTime's video input, carries it into the call.
 
 No audio, transcript, or text reaches the page. It receives call state (`idle` or
-`active`) and mouth numbers.
+`active`) and voice levels.
+
+The loop is rendered ahead of time by `scripts/avatar-loop/render.mjs`, which draws
+about 1.7 million line segments per frame with depth of field and bloom in headless
+Chrome and encodes the result with ffmpeg. That cost is paid once. On a call the Mac
+decodes one video and runs a few lines of shader. To change the look, edit
+`scripts/avatar-loop/render.html`, check stills with `--stills=0,0.5`, and render
+again.
+
+The video is a build output. At about 9 MB it is too large for this repository, so
+git ignores it; `npm pack` includes it when it has been rendered. A package built
+without it answers `404` for the video, and the page shows a plain glow that follows
+the voice the same way.
 
 ### Feed protocol
 
 Server to page, JSON text frames. The page sends nothing; a viewer that sends a
 message is closed.
 
-| Message                                                        | Meaning                                          |
-| -------------------------------------------------------------- | ------------------------------------------------ |
-| `{"type":"hello","now":<ms>,"call":"idle"\|"active"}`          | Sent on connect. `now` aligns the page's clock.  |
-| `{"type":"call","state":"idle"\|"active"}`                     | The call started or its media stopped.           |
-| `{"type":"speak","at":<ms>,"hopMs":20,"frames":[o,w,o,w,...]}` | Mouth shapes; frame _i_ plays at `at + i*hopMs`. |
-| `{"type":"clear"}`                                             | Discard scheduled shapes now.                    |
+| Message                                                    | Meaning                                          |
+| ---------------------------------------------------------- | ------------------------------------------------ |
+| `{"type":"hello","now":<ms>,"call":"idle"\|"active"}`      | Sent on connect. `now` aligns the page's clock.  |
+| `{"type":"call","state":"idle"\|"active"}`                 | The call started or its media stopped.           |
+| `{"type":"speak","at":<ms>,"hopMs":20,"levels":[l,l,...]}` | Voice levels; level _i_ plays at `at + i*hopMs`. |
+| `{"type":"clear"}`                                         | Discard scheduled levels now.                    |
 
 Page URL parameters: `demo=1` animates without a call, for placing the source in
-OBS. `offsetMs` trims lip sync against the video path's delay. `bg` and `accent` set
-colors.
+OBS. `offsetMs` trims the light against the video path's delay.
 
 ### Access
 
-The route is registered only when `avatar.enabled` is set. It uses plugin-managed
-auth and admits only direct loopback connections: a request from another address, or
+The page route and the video route under it (`/facetime/avatar/loop.mp4`) are
+registered only when `avatar.enabled` is set. They use plugin-managed auth and admit
+only direct loopback connections: a request from another address, or
 one that carries proxy forwarding headers, gets `403`. That keeps the Gateway token
 out of OBS scene files.
 
@@ -245,8 +258,8 @@ when it is speaking, which is why they are loopback-only.
 Audio reaches FaceTime through SoX and the virtual microphone; video through OBS and
 the virtual camera. The two paths have different delays, and FaceTime adds its own.
 The feed carries the audio path's play time, and `offsetMs` on the page URL shifts
-the mouth to match. The right value for a given machine has to be found on a live
-call.
+the light to match. A glow forgives far more delay than a mouth does, so the default
+of `0` is usually fine.
 
 ## Alternatives rejected
 
@@ -260,7 +273,9 @@ call.
 | Hosted streaming avatar (HeyGen, D-ID, Simli)                    | Paid per minute, sends call audio to a third party, and adds a network hop to every word.                                                                         |
 | A camera system extension instead of OBS                         | Needs entitlements, signing, notarization, and a system-extension approval. OBS Virtual Camera is already installed and selected.                                 |
 | A separate local HTTP port for the avatar                        | The Gateway already serves plugin routes and WebSocket upgrades. A second listener would be a new surface to secure and to keep alive.                            |
-| Polling the Gateway for mouth state                              | Adds latency and steady load. A WebSocket pushes shapes ahead of their play time.                                                                                 |
+| Polling the Gateway for the voice level                          | Adds latency and steady load. A WebSocket pushes levels ahead of their play time.                                                                                 |
+| A character whose mouth follows the sound                        | The first version. A drawn face invites comparison with real lip movement and loses. Light that follows the voice reads as speech without that comparison.        |
+| Drawing the head live in the page                                | Fine filaments with depth of field need millions of segments per frame. Rendering them once into a video costs the Mac one hardware decode instead.               |
 | A companion plugin                                               | Vision needs the call's realtime session and the avatar needs the call's playback clock. Both are owned by this plugin; a second plugin would need them exported. |
 
 ## Limits
@@ -270,6 +285,7 @@ call.
 - The agent sees a still from the last 2 seconds, not motion.
 - The consulted agent does not receive the frame. The realtime model has to put what
   it saw into the question it delegates.
-- Lip sync is driven by sound, not by phonemes. It reads as speech; it does not
-  form exact visemes.
-- The avatar is one built-in character. Custom art is not supported yet.
+- The avatar has no mouth. Its light follows how loud the voice is, not what is said.
+- The avatar is one built-in loop. Changing it means rendering a new video.
+- FaceTime compresses video hard. The finest filaments soften on the caller's
+  screen, most while the head moves.
