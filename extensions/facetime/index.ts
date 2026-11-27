@@ -29,7 +29,7 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
     let avatarFeedPromise: Promise<import("./runtime-api.js").FaceTimeAvatarFeed> | undefined;
     let uninstalling = false;
 
-    // One feed serves the avatar page and every call's mouth shapes. It loads with the first
+    // One feed serves the avatar page and every call's voice levels. It loads with the first
     // viewer or the runtime, whichever comes first.
     const ensureAvatarFeed = () =>
       (avatarFeedPromise ??= import("./runtime-api.js").then(({ createFaceTimeAvatarFeed }) =>
@@ -115,6 +115,12 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
         handler: async (req, res) => await (await ensureAvatarFeed()).handleRequest(req, res),
         handleUpgrade: async (req, socket, head) =>
           (await ensureAvatarFeed()).handleUpgrade(req, socket, head),
+      });
+      api.registerHttpRoute({
+        path: "/facetime/avatar/loop.mp4",
+        auth: "plugin",
+        match: "exact",
+        handler: async (req, res) => await (await ensureAvatarFeed()).handleRequest(req, res),
       });
     }
 

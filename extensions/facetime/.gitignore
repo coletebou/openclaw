@@ -10,3 +10,6 @@ helper/FaceTimeHelper.xcodeproj/xcuserdata/
 DerivedData/
 native/.build/
 native-driver/.build/
+
+# Rendered by scripts/avatar-loop/render.mjs and packed when present; too large for git.
+assets/avatar-loop.mp4

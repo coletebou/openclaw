@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Avatar loop renderer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <script>
+      // Offline renderer for assets/avatar-loop.mp4. render.mjs opens this page in headless
+      // Chrome and saves the frames it posts. Each frame stacks two pictures of the same
+      // moment: the dim head on top and only the light it emits below. The avatar page adds
+      // the lower half to the upper half in proportion to the agent's voice.
+      (async function () {
+        "use strict";
+        const Q = new URLSearchParams(location.search);
+        const num = (name, fallback) => (Q.has(name) ? Number(Q.get(name)) : fallback);
+        const W = 1920;
+        const H = 1080;
+        const SS = num("ss", 2); // supersampling of the line pass
+        const PASSES = num("passes", 32); // lens and subpixel samples per frame
+        const FPS = 30;
+        const SECONDS = num("seconds", 12);
+        const FRAMES = FPS * SECONDS;
+        const STRANDS = num("strands", 15000);
+        const TAU = Math.PI * 2;
+
+        const post = (path, body) => fetch(path, { method: "POST", body });
+        window.addEventListener("error", (e) => post("/log", "error: " + e.message));
+
+        // ---------- deterministic randomness and noise ----------
+        function mulberry32(a) {
+          return function () {
+            a |= 0;
+            a = (a + 0x6d2b79f5) | 0;
+            let t = Math.imul(a ^ (a >>> 15), 1 | a);
+            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+          };
+        }
+        function hash3(x, y, z) {
+          let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(z, 1440662683);
+          h = Math.imul(h ^ (h >>> 13), 1274126177);
+          return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+        }
+        function vnoise(x, y, z) {
+          const ix = Math.floor(x);
+          const iy = Math.floor(y);
+          const iz = Math.floor(z);
+          let fx = x - ix;
+          let fy = y - iy;
+          let fz = z - iz;
+          fx = fx * fx * (3 - 2 * fx);
+          fy = fy * fy * (3 - 2 * fy);
+          fz = fz * fz * (3 - 2 * fz);
+          const l = (a, b, t) => a + (b - a) * t;
+          return l(
+            l(
+              l(hash3(ix, iy, iz), hash3(ix + 1, iy, iz), fx),
+              l(hash3(ix, iy + 1, iz), hash3(ix + 1, iy + 1, iz), fx),
+              fy,
+            ),
+            l(
+              l(hash3(ix, iy, iz + 1), hash3(ix + 1, iy, iz + 1), fx),
+              l(hash3(ix, iy + 1, iz + 1), hash3(ix + 1, iy + 1, iz + 1), fx),
+              fy,
+            ),
+            fz,
+          );
+        }
+        const fbm = (x, y, z) =>
+          (0.5 * vnoise(x, y, z) +
+            0.25 * vnoise(2.03 * x + 7.1, 2.03 * y - 3.3, 2.03 * z + 1.7) +
+            0.125 * vnoise(4.1 * x - 2.2, 4.1 * y + 9.4, 4.1 * z - 5.6)) /
+          0.875;
+
+        // ---------- the head: a signed distance field, y up, face toward +z ----------
+        function ell(px, py, pz, cx, cy, cz, rx, ry, rz) {
+          const x = px - cx;
+          const y = py - cy;
+          const z = pz - cz;
+          const k0 = Math.hypot(x / rx, y / ry, z / rz);
+          const k1 = Math.hypot(x / (rx * rx), y / (ry * ry), z / (rz * rz));
+          return k1 < 1e-9 ? -Math.min(rx, ry, rz) : (k0 * (k0 - 1)) / k1;
+        }
+        function capsule(px, py, pz, ax, ay, az, bx, by, bz, r) {
+          const bax = bx - ax;
+          const bay = by - ay;
+          const baz = bz - az;
+          const pax = px - ax;
+          const pay = py - ay;
+          const paz = pz - az;
+          let h = (pax * bax + pay * bay + paz * baz) / (bax * bax + bay * bay + baz * baz);
+          h = Math.max(0, Math.min(1, h));
+          return Math.hypot(pax - bax * h, pay - bay * h, paz - baz * h) - r;
+        }
+        function smin(a, b, k) {
+          const h = Math.max(k - Math.abs(a - b), 0) / k;
+          return Math.min(a, b) - h * h * k * 0.25;
+        }
+        const smax = (a, b, k) => -smin(-a, -b, k);
+        function sdf(x, y, z) {
+          const ax = Math.abs(x);
+          let d = ell(x, y, z, 0, 0.13, -0.07, 0.4, 0.45, 0.5); // cranium
+          d = smin(d, ell(x, y, z, 0, -0.13, 0.07, 0.315, 0.4, 0.36), 0.12); // face
+          d = smin(d, ell(x, y, z, 0, -0.43, 0.2, 0.15, 0.115, 0.15), 0.15); // chin
+          d = smin(d, ell(ax, y, z, 0.2, -0.13, 0.27, 0.12, 0.11, 0.12), 0.1); // cheekbones
+          d = smin(d, ell(x, y, z, 0, 0.075, 0.37, 0.26, 0.055, 0.09), 0.08); // brow
+          d = smax(d, -ell(ax, y, z, 0.15, -0.01, 0.445, 0.085, 0.058, 0.08), 0.06); // eye sockets
+          d = smin(d, ell(x, y, z, 0, -0.085, 0.44, 0.048, 0.13, 0.08), 0.05); // nose bridge
+          d = smin(d, ell(x, y, z, 0, -0.185, 0.475, 0.058, 0.05, 0.06), 0.045); // nose tip
+          d = smin(d, ell(x, y, z, 0, -0.31, 0.375, 0.1, 0.04, 0.06), 0.05); // lips
+          d = smin(d, capsule(x, y, z, 0, -0.4, -0.1, 0, -0.98, -0.16, 0.195), 0.14); // neck
+          d = smin(d, ell(ax, y, z, 0.3, -0.97, -0.16, 0.37, 0.15, 0.22), 0.16); // trapezius
+          d = smin(d, ell(x, y, z, 0, -1.24, -0.14, 0.96, 0.3, 0.36), 0.18); // shoulders
+          d = smin(d, ell(x, y, z, 0, -1.7, -0.06, 0.8, 0.62, 0.42), 0.2); // chest
+          return d;
+        }
+        const grad = new Float64Array(3);
+        function normalAt(x, y, z) {
+          const e = 0.0015;
+          const a = sdf(x + e, y - e, z - e);
+          const b = sdf(x - e, y - e, z + e);
+          const c = sdf(x - e, y + e, z - e);
+          const d = sdf(x + e, y + e, z + e);
+          let nx = a - b - c + d;
+          let ny = -a - b + c + d;
+          let nz = -a + b - c + d;
+          const l = Math.hypot(nx, ny, nz) || 1;
+          grad[0] = nx / l;
+          grad[1] = ny / l;
+          grad[2] = nz / l;
+        }
+
+        // ---------- filaments: streamlines of a swirling field on the surface ----------
+        function buildStrands(count) {
+          const rng = mulberry32(20261127);
+          const steps = new Int32Array(count);
+          let total = 0;
+          for (let i = 0; i < count; i++) {
+            steps[i] = 50 + Math.floor(rng() * rng() * 260);
+            total += steps[i];
+          }
+          const pos = new Float32Array(total * 3);
+          const nor = new Float32Array(total * 3);
+          const info = new Float32Array(total * 3);
+          const index = new Uint32Array((total - count) * 2);
+          const H_STEP = 0.0105;
+          // The swirl axis leans back so the whorl sits on the crown, not on top of the face.
+          const AX = 0;
+          const AY = 0.94;
+          const AZ = -0.34;
+          let v = 0;
+          let ii = 0;
+          for (let s = 0; s < count; s++) {
+            let x;
+            let y;
+            let z;
+            for (;;) {
+              x = (rng() * 2 - 1) * 1.15;
+              y = -1.95 + rng() * 2.6;
+              z = (rng() * 2 - 1) * 0.66;
+              if (y < -0.6 && rng() < 0.45) continue; // spend more filaments on the head
+              const d = sdf(x, y, z);
+              if (Math.abs(d) > 0.05) continue;
+              normalAt(x, y, z);
+              x -= grad[0] * d;
+              y -= grad[1] * d;
+              z -= grad[2] * d;
+              break;
+            }
+            const n = steps[s];
+            const seed = rng();
+            const twist = (rng() - 0.5) * 0.18;
+            const lift = (rng() - 0.5) * 0.012; // a hair above or below the surface
+            const first = v;
+            for (let k = 0; k < n; k++) {
+              normalAt(x, y, z);
+              const nx = grad[0];
+              const ny = grad[1];
+              const nz = grad[2];
+              pos[v * 3] = x + nx * lift;
+              pos[v * 3 + 1] = y + ny * lift;
+              pos[v * 3 + 2] = z + nz * lift;
+              nor[v * 3] = nx;
+              nor[v * 3 + 1] = ny;
+              nor[v * 3 + 2] = nz;
+              info[v * 3] = k / (n - 1);
+              info[v * 3 + 1] = seed;
+              info[v * 3 + 2] = n * H_STEP;
+              if (k > 0) {
+                index[ii++] = v - 1;
+                index[ii++] = v;
+              }
+              v++;
+              // tangent that circles the axis, turned about the normal by a noise angle
+              let tx = ny * AZ - nz * AY;
+              let ty = nz * AX - nx * AZ;
+              let tz = nx * AY - ny * AX;
+              const tl = Math.hypot(tx, ty, tz);
+              if (tl < 1e-4) break;
+              tx /= tl;
+              ty /= tl;
+              tz /= tl;
+              const ang =
+                (fbm(x * 1.7 + 3.1, y * 1.7 - 1.2, z * 1.7 + 8.4) - 0.5) * 2.6 +
+                0.35 * Math.sin(y * 5.0 + x * 2.0) +
+                twist;
+              const ca = Math.cos(ang);
+              const sa = Math.sin(ang);
+              // b = n x t
+              const bx = ny * tz - nz * ty;
+              const by = nz * tx - nx * tz;
+              const bz = nx * ty - ny * tx;
+              x += (tx * ca + bx * sa) * H_STEP;
+              y += (ty * ca + by * sa) * H_STEP;
+              z += (tz * ca + bz * sa) * H_STEP;
+              for (let r = 0; r < 2; r++) {
+                const d = sdf(x, y, z);
+                x -= nx * d;
+                y -= ny * d;
+                z -= nz * d;
+              }
+              if (y < -2.0) {
+                // ran off the bottom of the frame: end the strand here
+                for (let q = first; q < v; q++)
+                  info[q * 3] = (q - first) / Math.max(1, v - 1 - first);
+                break;
+              }
+            }
+            const made = v - first;
+            for (let q = first; q < v; q++) {
+              info[q * 3] = made > 1 ? (q - first) / (made - 1) : 0;
+              info[q * 3 + 2] = made * H_STEP;
+            }
+          }
+          return {
+            pos: pos.subarray(0, v * 3),
+            nor: nor.subarray(0, v * 3),
+            info: info.subarray(0, v * 3),
+            index: index.subarray(0, ii),
+            verts: v,
+          };
+        }
+
+        // ---------- WebGL ----------
+        const canvas = document.getElementById("c");
+        canvas.width = W;
+        canvas.height = H * 2;
+        const gl = canvas.getContext("webgl2", {
+          antialias: false,
+          alpha: false,
+          preserveDrawingBuffer: true,
+          powerPreference: "high-performance",
+        });
+        if (!gl) {
+          await post("/log", "no webgl2");
+          await post("/done", "fail");
+          return;
+        }
+        const floatTargets = gl.getExtension("EXT_color_buffer_float");
+        const floatBlend = gl.getExtension("EXT_float_blend");
+        gl.getExtension("OES_texture_float_linear");
+        if (!floatTargets) {
+          await post("/log", "no float render targets");
+          await post("/done", "fail");
+          return;
+        }
+        const ACC_FORMAT = floatBlend ? gl.RGBA32F : gl.RGBA16F;
+
+        function program(vs, fs) {
+          const p = gl.createProgram();
+          for (const [type, src] of [
+            [gl.VERTEX_SHADER, vs],
+            [gl.FRAGMENT_SHADER, fs],
+          ]) {
+            const sh = gl.createShader(type);
+            gl.shaderSource(sh, src);
+            gl.compileShader(sh);
+            if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+              throw new Error(gl.getShaderInfoLog(sh) + "\n" + src);
+            }
+            gl.attachShader(p, sh);
+          }
+          gl.linkProgram(p);
+          if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+          const u = {};
+          const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+          for (let i = 0; i < n; i++) {
+            const name = gl.getActiveUniform(p, i).name;
+            u[name] = gl.getUniformLocation(p, name);
+          }
+          return { p, u };
+        }
+
+        const SWAY_GLSL = `
+          uniform vec3 uSway; // yaw, pitch, roll of the head
+          uniform float uBreath;
+          const vec3 PIVOT = vec3(0., -0.62, -0.08);
+          mat3 rotY(float a){ float c=cos(a), s=sin(a); return mat3(c,0.,-s, 0.,1.,0., s,0.,c); }
+          mat3 rotX(float a){ float c=cos(a), s=sin(a); return mat3(1.,0.,0., 0.,c,s, 0.,-s,c); }
+          mat3 rotZ(float a){ float c=cos(a), s=sin(a); return mat3(c,s,0., -s,c,0., 0.,0.,1.); }
+          // The head turns fully, the shoulders barely: the neck twists between them.
+          mat3 swayAt(float y, out float w){
+            w = mix(0.2, 1.0, smoothstep(-1.06, -0.42, y));
+            return rotY(uSway.x*w) * rotX(uSway.y*w) * rotZ(uSway.z*w);
+          }
+          float hash(float n){ return fract(sin(n*127.1)*43758.5453); }
+        `;
+        const CAMERA_GLSL = `
+          uniform mat4 uView, uProj;
+          uniform vec3 uCam;
+          uniform vec2 uJitter, uLens;
+          uniform float uFocus;
+          vec4 project(vec3 wp, out float depth){
+            vec4 vp = uView * vec4(wp, 1.);
+            depth = -vp.z;
+            vp.xy += uLens * (depth - uFocus) / uFocus; // thin lens: the focus plane stays put
+            vec4 cp = uProj * vp;
+            cp.xy += uJitter * cp.w;
+            return cp;
+          }
+        `;
+
+        const strandProgram = program(
+          `#version 300 es
+          precision highp float;
+          layout(location=0) in vec3 aPos;
+          layout(location=1) in vec3 aNor;
+          layout(location=2) in vec3 aInfo; // 0..1 along the strand, seed, strand length
+          ${SWAY_GLSL}
+          ${CAMERA_GLSL}
+          uniform vec3 uCore;
+          uniform float uPhase, uGain, uPoint, uCoc;
+          uniform int uMode;
+          out vec3 vCol;
+          void main(){
+            float w;
+            mat3 R = swayAt(aPos.y, w);
+            vec3 wp = R * (aPos - PIVOT) + PIVOT;
+            wp.y += uBreath * (1. - w);
+            vec3 wn = R * aNor;
+            float depth;
+            gl_Position = project(wp, depth);
+            vec3 V = normalize(uCam - wp);
+            float ndv = dot(wn, V);
+            float u = aInfo.x, seed = aInfo.y, arc = aInfo.x * aInfo.z;
+            float ends = pow(max(sin(3.14159265 * u), 0.), 0.6);
+            float sb = mix(0.3, 1.8, pow(hash(seed * 91.7), 1.6));
+            vec3 c;
+            if (uMode == 0) {
+              float facing = mix(0.04, 1., smoothstep(-0.3, 0.3, ndv));
+              vec3 L1 = normalize(vec3(-0.55, 0.62, 0.56));
+              vec3 L2 = normalize(vec3(0.85, 0.15, -0.35));
+              float dif = max(dot(wn, L1), 0.);
+              float rim = pow(1. - abs(ndv), 2.6);
+              float kick = pow(max(dot(wn, L2), 0.), 2.);
+              float shimmer = 1. + 0.45 * sin(6.2831853 * (arc * 0.8 - uPhase * 2. + hash(seed)));
+              c = vec3(0.06, 0.15, 0.55) * (0.16 + 1.15 * dif)
+                + vec3(0.22, 0.68, 1.0) * rim * 0.95
+                + vec3(0.6, 0.25, 0.95) * kick * 0.7;
+              c *= facing * shimmer;
+            } else {
+              float facing = mix(0.3, 1., smoothstep(-0.3, 0.3, ndv));
+              float fall = 1. / (1. + pow(length(wp - uCore) / 0.7, 2.));
+              float ph = fract(arc * 0.55 - uPhase * 4. + hash(seed * 3.3));
+              float pulse = exp(-pow((ph - 0.5) / 0.07, 2.));
+              float ph2 = fract(arc * 0.23 + uPhase + hash(seed * 7.7));
+              float glow = exp(-pow((ph2 - 0.5) / 0.22, 2.));
+              vec3 warm = mix(vec3(1.0, 0.4, 0.1), vec3(1.0, 0.86, 0.6), clamp(pulse + 0.3 * glow, 0., 1.));
+              // one filament in three carries a running glint; the rest only breathe
+              float carrier = step(0.64, hash(seed * 5.1));
+              c = warm * (0.07 + 0.3 * glow + 5.5 * pulse * carrier) * fall * facing;
+            }
+            float size = uPoint + abs(depth - uFocus) * uCoc;
+            gl_PointSize = max(size, 1.);
+            float spread = uPoint > 0. ? (uPoint * uPoint) / (size * size) : 1.;
+            vCol = c * ends * sb * uGain * spread;
+          }`,
+          `#version 300 es
+          precision highp float;
+          in vec3 vCol;
+          uniform float uPoint;
+          out vec4 o;
+          void main(){
+            float a = 1.;
+            if (uPoint > 0.) {
+              float d = length(gl_PointCoord - 0.5);
+              a = smoothstep(0.5, 0.32, d);
+            }
+            o = vec4(vCol * a, 1.);
+          }`,
+        );
+
+        const dustProgram = program(
+          `#version 300 es
+          precision highp float;
+          layout(location=0) in vec3 aPos;
+          layout(location=1) in vec3 aSeed;
+          ${CAMERA_GLSL}
+          uniform vec3 uCore;
+          uniform float uPhase, uGain, uPoint, uCoc;
+          uniform int uMode;
+          out vec3 vCol;
+          void main(){
+            // each mote drifts on its own small loop, a whole number of turns per video loop
+            float k = 1. + floor(aSeed.x * 2.);
+            vec3 wp = aPos + 0.06 * vec3(
+              sin(6.2831853 * (uPhase * k + aSeed.y)),
+              sin(6.2831853 * (uPhase * (3. - k) + aSeed.z)),
+              cos(6.2831853 * (uPhase * k + aSeed.x)));
+            float depth;
+            gl_Position = project(wp, depth);
+            float size = uPoint * (0.6 + 1.2 * aSeed.z) + abs(depth - uFocus) * uCoc;
+            gl_PointSize = max(size, 1.);
+            float spread = (uPoint * uPoint) / (size * size);
+            float twinkle = 0.6 + 0.4 * sin(6.2831853 * (uPhase * (2. + k) + aSeed.y * 5.));
+            vec3 c = uMode == 0
+              ? vec3(0.25, 0.5, 1.0) * 0.5
+              : vec3(1.0, 0.62, 0.3) * 2.2 / (1. + pow(length(wp - uCore) / 0.7, 2.));
+            vCol = c * uGain * spread * twinkle * (0.3 + aSeed.x);
+          }`,
+          `#version 300 es
+          precision highp float;
+          in vec3 vCol;
+          out vec4 o;
+          void main(){
+            float d = length(gl_PointCoord - 0.5);
+            o = vec4(vCol * smoothstep(0.5, 0.3, d), 1.);
+          }`,
+        );
+
+        const QUAD_VS = `#version 300 es
+          precision highp float;
+          out vec2 vUv;
+          void main(){
+            vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 2.;
+            vUv = p;
+            gl_Position = vec4(p * 2. - 1., 0., 1.);
+          }`;
+        // 4 bilinear taps = a 4x4 tent: a cheap, smooth halving for the bloom chain
+        const downProgram = program(
+          QUAD_VS,
+          `#version 300 es
+          precision highp float;
+          in vec2 vUv;
+          uniform sampler2D uTex;
+          uniform vec2 uTexel;
+          uniform float uScale;
+          out vec4 o;
+          void main(){
+            vec3 c = texture(uTex, vUv + uTexel * vec2(-1., -1.)).rgb
+                   + texture(uTex, vUv + uTexel * vec2( 1., -1.)).rgb
+                   + texture(uTex, vUv + uTexel * vec2(-1.,  1.)).rgb
+                   + texture(uTex, vUv + uTexel * vec2( 1.,  1.)).rgb;
+            o = vec4(c * 0.25 * uScale, 1.);
+          }`,
+        );
+        const finalProgram = program(
+          QUAD_VS,
+          `#version 300 es
+          precision highp float;
+          in vec2 vUv;
+          uniform sampler2D uB0, uB1, uB2, uB3, uB4, uB5;
+          uniform vec2 uCoreUv;
+          uniform float uExposure;
+          uniform int uMode;
+          out vec4 o;
+          void main(){
+            vec3 c = texture(uB0, vUv).rgb;
+            vec3 bloom = texture(uB1, vUv).rgb * 0.5 + texture(uB2, vUv).rgb * 0.6
+                       + texture(uB3, vUv).rgb * 0.7 + texture(uB4, vUv).rgb * 0.8
+                       + texture(uB5, vUv).rgb * 0.9;
+            vec2 p = (vUv - 0.5) * vec2(16. / 9., 1.);
+            vec2 q = (vUv - uCoreUv) * vec2(16. / 9., 1.);
+            float r2 = dot(q, q);
+            if (uMode == 0) {
+              c += bloom * 0.16;
+              // a faint cool backdrop so the silhouette separates from black
+              c += vec3(0.004, 0.008, 0.022) * exp(-r2 / 0.22) + vec3(0.0012, 0.0015, 0.004);
+            } else {
+              c += bloom * 0.24;
+              // the light inside the head; the page adds the wide haze around it, because a
+              // faint wide gradient would band once it is stored as 8-bit video
+              c += vec3(1.0, 0.55, 0.2) * 0.26 * exp(-r2 / 0.008)
+                 + vec3(1.0, 0.36, 0.12) * 0.06 * exp(-r2 / 0.05);
+            }
+            c = 1. - exp(-c * uExposure);
+            c *= 1. - 0.5 * dot(p, p) * dot(p, p) * 1.6; // vignette
+            c = pow(max(c, 0.), vec3(1. / 2.2));
+            // half a step of noise before rounding to 8 bits turns bands into grain
+            c += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.;
+            o = vec4(c, 1.);
+          }`,
+        );
+
+        function target(w, h, format) {
+          const tex = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.texStorage2D(gl.TEXTURE_2D, 1, format, w, h);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          const fbo = gl.createFramebuffer();
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+          if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+            throw new Error("framebuffer incomplete " + w + "x" + h);
+          }
+          return { tex, fbo, w, h };
+        }
+        const accum = target(W * SS, H * SS, ACC_FORMAT);
+        const chain = [];
+        for (let i = 0; i < 6; i++) chain.push(target(W >> i, H >> i, gl.RGBA16F));
+
+        const t0 = performance.now();
+        const strands = buildStrands(STRANDS);
+        await post(
+          "/log",
+          `strands: ${strands.verts} vertices in ${Math.round(performance.now() - t0)} ms`,
+        );
+
+        const strandVao = gl.createVertexArray();
+        gl.bindVertexArray(strandVao);
+        for (const [loc, data] of [
+          [0, strands.pos],
+          [1, strands.nor],
+          [2, strands.info],
+        ]) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+          gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc);
+          gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+        }
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, strands.index, gl.STATIC_DRAW);
+
+        // Bright nodes: every 9th filament vertex, drawn as points over the lines.
+        const NODE_STRIDE = 9;
+        const nodeVao = gl.createVertexArray();
+        gl.bindVertexArray(nodeVao);
+        const nodeCount = Math.floor(strands.verts / NODE_STRIDE);
+        for (const [loc, data] of [
+          [0, strands.pos],
+          [1, strands.nor],
+          [2, strands.info],
+        ]) {
+          const sub = new Float32Array(nodeCount * 3);
+          for (let i = 0; i < nodeCount; i++) {
+            sub[i * 3] = data[i * NODE_STRIDE * 3];
+            sub[i * 3 + 1] = data[i * NODE_STRIDE * 3 + 1];
+            sub[i * 3 + 2] = data[i * NODE_STRIDE * 3 + 2];
+          }
+          gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+          gl.bufferData(gl.ARRAY_BUFFER, sub, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(loc);
+          gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+        }
+
+        const DUST = 1100;
+        const dustVao = gl.createVertexArray();
+        gl.bindVertexArray(dustVao);
+        {
+          const rng = mulberry32(77);
+          const p = new Float32Array(DUST * 3);
+          const s = new Float32Array(DUST * 3);
+          for (let i = 0; i < DUST; i++) {
+            p[i * 3] = (rng() * 2 - 1) * 3.2;
+            p[i * 3 + 1] = -1.9 + rng() * 3.0;
+            p[i * 3 + 2] = -2.4 + rng() * 4.4;
+            s[i * 3] = rng();
+            s[i * 3 + 1] = rng();
+            s[i * 3 + 2] = rng();
+          }
+          gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+          gl.bufferData(gl.ARRAY_BUFFER, p, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+          gl.bufferData(gl.ARRAY_BUFFER, s, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(1);
+          gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+        }
+        const quadVao = gl.createVertexArray();
+
+        // ---------- camera ----------
+        const CAM = [0, -0.3, num("dist", 5.0)];
+        const LOOK = [0, -0.36, 0];
+        const FOCUS = CAM[2] - 0.32; // the face
+        const FOV = (24 * Math.PI) / 180;
+        function perspective(fovy, aspect, near, far) {
+          const f = 1 / Math.tan(fovy / 2);
+          // prettier-ignore
+          return new Float32Array([
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (far + near) / (near - far), -1,
+            0, 0, (2 * far * near) / (near - far), 0,
+          ]);
+        }
+        function lookAt(eye, at) {
+          let zx = eye[0] - at[0];
+          let zy = eye[1] - at[1];
+          let zz = eye[2] - at[2];
+          const zl = Math.hypot(zx, zy, zz);
+          zx /= zl;
+          zy /= zl;
+          zz /= zl;
+          let xx = zz;
+          let xy = 0;
+          let xz = -zx; // up x z
+          const xl = Math.hypot(xx, xy, xz);
+          xx /= xl;
+          xz /= xl;
+          const yx = zy * xz - zz * xy;
+          const yy = zz * xx - zx * xz;
+          const yz = zx * xy - zy * xx;
+          // prettier-ignore
+          return new Float32Array([
+            xx, yx, zx, 0,
+            xy, yy, zy, 0,
+            xz, yz, zz, 0,
+            -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
+            -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
+            -(zx * eye[0] + zy * eye[1] + zz * eye[2]),
+            1,
+          ]);
+        }
+        const PROJ = perspective(FOV, W / H, 0.1, 50);
+        const VIEW = lookAt(CAM, LOOK);
+
+        // lens samples on a sunflower spiral: an even disc, the same every frame
+        const lens = [];
+        for (let i = 0; i < PASSES; i++) {
+          const r = Math.sqrt((i + 0.5) / PASSES);
+          const a = i * 2.39996323;
+          lens.push([
+            r * Math.cos(a),
+            r * Math.sin(a),
+            ((i * 0.618034) % 1) - 0.5,
+            ((i * 0.754878) % 1) - 0.5,
+          ]);
+        }
+        const APERTURE = num("aperture", 0.02);
+
+        function swayAt(phase) {
+          const a = TAU * phase;
+          return [
+            0.17 * Math.sin(a) + 0.05 * Math.sin(2 * a + 0.9),
+            0.045 * Math.sin(a + 1.4) + 0.022 * Math.sin(3 * a),
+            0.03 * Math.sin(a + 2.6),
+          ];
+        }
+        function coreAt(sway) {
+          // the same rotation the shader gives the head, applied to the light inside it
+          const [yaw, pitch, roll] = sway;
+          let x = 0;
+          let y = -0.02 + 0.62;
+          let z = 0.05 + 0.08;
+          let c = Math.cos(roll);
+          let s = Math.sin(roll);
+          [x, y] = [x * c - y * s, x * s + y * c];
+          c = Math.cos(pitch);
+          s = Math.sin(pitch);
+          [y, z] = [y * c - z * s, y * s + z * c];
+          c = Math.cos(yaw);
+          s = Math.sin(yaw);
+          [x, z] = [x * c + z * s, -x * s + z * c];
+          return [x, y - 0.62, z - 0.08];
+        }
+        function toUv(p) {
+          const v = [
+            VIEW[0] * p[0] + VIEW[4] * p[1] + VIEW[8] * p[2] + VIEW[12],
+            VIEW[1] * p[0] + VIEW[5] * p[1] + VIEW[9] * p[2] + VIEW[13],
+            VIEW[2] * p[0] + VIEW[6] * p[1] + VIEW[10] * p[2] + VIEW[14],
+          ];
+          const w = -v[2];
+          return [(PROJ[0] * v[0]) / w / 2 + 0.5, (PROJ[5] * v[1]) / w / 2 + 0.5];
+        }
+
+        function setCommon(prog, mode, phase, sway, core, pass) {
+          gl.useProgram(prog.p);
+          gl.uniformMatrix4fv(prog.u.uView, false, VIEW);
+          gl.uniformMatrix4fv(prog.u.uProj, false, PROJ);
+          gl.uniform3fv(prog.u.uCam, CAM);
+          gl.uniform3fv(prog.u.uCore, core);
+          gl.uniform1f(prog.u.uFocus, FOCUS);
+          gl.uniform1f(prog.u.uPhase, phase);
+          gl.uniform1i(prog.u.uMode, mode);
+          if (prog.u.uSway) {
+            gl.uniform3fv(prog.u.uSway, sway);
+            gl.uniform1f(prog.u.uBreath, 0.006 * Math.sin(TAU * 3 * phase));
+          }
+          const l = lens[pass];
+          gl.uniform2f(prog.u.uJitter, ((l[2] * 2) / (W * SS)) * 2, ((l[3] * 2) / (H * SS)) * 2);
+          return l;
+        }
+
+        function renderMode(mode, phase, y) {
+          const sway = swayAt(phase);
+          const core = coreAt(sway);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, accum.fbo);
+          gl.viewport(0, 0, accum.w, accum.h);
+          gl.clearColor(0, 0, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE);
+          const inv = 1 / PASSES;
+          for (let pass = 0; pass < PASSES; pass++) {
+            // filaments: thin lines, blurred only by the lens samples
+            let l = setCommon(strandProgram, mode, phase, sway, core, pass);
+            gl.uniform2f(strandProgram.u.uLens, l[0] * APERTURE, l[1] * APERTURE);
+            gl.uniform1f(strandProgram.u.uPoint, 0);
+            gl.uniform1f(strandProgram.u.uCoc, 0);
+            gl.uniform1f(strandProgram.u.uGain, (mode === 0 ? 0.2 : 0.2) * inv);
+            gl.bindVertexArray(strandVao);
+            gl.drawElements(gl.LINES, strands.index.length, gl.UNSIGNED_INT, 0);
+            // nodes and dust: sprites sized by their distance from the focus plane
+            gl.uniform2f(strandProgram.u.uLens, 0, 0);
+            gl.uniform1f(strandProgram.u.uPoint, 1.6 * SS);
+            gl.uniform1f(strandProgram.u.uCoc, 14 * SS);
+            gl.uniform1f(strandProgram.u.uGain, (mode === 0 ? 0.5 : 0.4) * inv);
+            gl.bindVertexArray(nodeVao);
+            gl.drawArrays(gl.POINTS, 0, nodeCount);
+            l = setCommon(dustProgram, mode, phase, sway, core, pass);
+            gl.uniform2f(dustProgram.u.uLens, 0, 0);
+            gl.uniform1f(dustProgram.u.uPoint, 2.2 * SS);
+            gl.uniform1f(dustProgram.u.uCoc, 16 * SS);
+            gl.uniform1f(dustProgram.u.uGain, 1.1 * inv);
+            gl.bindVertexArray(dustVao);
+            gl.drawArrays(gl.POINTS, 0, DUST);
+          }
+          gl.disable(gl.BLEND);
+          gl.bindVertexArray(quadVao);
+          // resolve the supersampled picture, then halve it five times for bloom
+          gl.useProgram(downProgram.p);
+          let src = accum;
+          for (let i = 0; i < chain.length; i++) {
+            const dst = chain[i];
+            gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+            gl.viewport(0, 0, dst.w, dst.h);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, src.tex);
+            gl.uniform1i(downProgram.u.uTex, 0);
+            const spread = i === 0 ? 0.5 : 1;
+            gl.uniform2f(downProgram.u.uTexel, spread / src.w, spread / src.h);
+            gl.uniform1f(downProgram.u.uScale, 1);
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+            src = dst;
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, y, W, H);
+          gl.useProgram(finalProgram.p);
+          for (let i = 0; i < chain.length; i++) {
+            gl.activeTexture(gl.TEXTURE0 + i);
+            gl.bindTexture(gl.TEXTURE_2D, chain[i].tex);
+            gl.uniform1i(finalProgram.u["uB" + i], i);
+          }
+          gl.uniform2fv(finalProgram.u.uCoreUv, toUv(core));
+          gl.uniform1f(finalProgram.u.uExposure, mode === 0 ? 1.2 : 1.0);
+          gl.uniform1i(finalProgram.u.uMode, mode);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
+
+        function renderFrame(phase) {
+          renderMode(0, phase, H); // GL's origin is bottom left: the base goes in the top half
+          renderMode(1, phase, 0);
+          gl.finish();
+        }
+        const blob = () => new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+
+        try {
+          if (Q.has("stills")) {
+            for (const s of Q.get("stills").split(",")) {
+              const phase = Number(s);
+              const start = performance.now();
+              renderFrame(phase);
+              const ms = Math.round(performance.now() - start);
+              await post(
+                "/frame/still-" + phase.toFixed(3).replace(".", "_") + ".png",
+                await blob(),
+              );
+              await post("/log", `still ${s}: ${ms} ms`);
+            }
+          } else {
+            const first = num("from", 0);
+            const last = num("to", FRAMES);
+            const start = performance.now();
+            for (let i = first; i < last; i++) {
+              renderFrame(i / FRAMES);
+              await post("/frame/f" + String(i).padStart(5, "0") + ".png", await blob());
+              if ((i - first) % 20 === 19) {
+                const per = (performance.now() - start) / (i - first + 1);
+                await post("/log", `frame ${i + 1}/${last}  ${Math.round(per)} ms/frame`);
+              }
+            }
+          }
+          await post("/done", "ok");
+        } catch (e) {
+          await post("/log", "failed: " + (e && e.stack ? e.stack : e));
+          await post("/done", "fail");
+        }
+      })();
+    </script>
+  </body>
+</html>
