@@ -9,17 +9,23 @@ import {
   type WebSocket,
   WebSocketServer,
 } from "openclaw/plugin-sdk/websocket-runtime";
-import { createLipSyncAnalyzer, LIP_SYNC_HOP_MS } from "./avatar-lipsync.js";
+import { createVoiceLevelAnalyzer, VOICE_LEVEL_HOP_MS } from "./avatar-voice-level.js";
 
 export const FACETIME_AVATAR_PATH = "/facetime/avatar";
-// A viewer that stops reading is skipped instead of buffering mouth shapes it will show late.
+export const FACETIME_AVATAR_LOOP_PATH = `${FACETIME_AVATAR_PATH}/loop.mp4`;
+// A viewer that stops reading is skipped instead of buffering voice levels it will show late.
 const MAX_VIEWER_BUFFERED_BYTES = 256 * 1024;
 const PAGE_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
   "Cache-Control": "no-store",
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; media-src blob:",
   "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+};
+const LOOP_HEADERS = {
+  "Content-Type": "video/mp4",
+  "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
 };
 
@@ -41,13 +47,13 @@ function isLocalViewer(req: IncomingMessage): boolean {
 }
 
 /**
- * Serves the avatar page and its view-only WebSocket feed on the Gateway. Viewers receive the
- * call state and scheduled mouth shapes; they send nothing back.
+ * Serves the avatar page, its loop video and its view-only WebSocket feed on the Gateway.
+ * Viewers receive the call state and scheduled voice levels; they send nothing back.
  */
 export function createFaceTimeAvatarFeed(params: { pluginRoot: string }) {
   const viewers = new Set<WebSocket>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
-  const analyze = createLipSyncAnalyzer();
+  const analyze = createVoiceLevelAnalyzer();
   let callActive = false;
   let page: Promise<string> | undefined;
 
@@ -71,6 +77,21 @@ export function createFaceTimeAvatarFeed(params: { pluginRoot: string }) {
       }
       if (req.method !== "GET" && req.method !== "HEAD") {
         res.writeHead(405, { Allow: "GET, HEAD", "Content-Type": "text/plain" }).end();
+        return true;
+      }
+      if (new URL(req.url ?? "/", "http://localhost").pathname === FACETIME_AVATAR_LOOP_PATH) {
+        // The page fetches the video once per load and loops it from memory. The video is a
+        // build output: a package built without it answers 404 and the page shows a plain glow.
+        const loop = await readFile(resolve(params.pluginRoot, "assets", "avatar-loop.mp4")).catch(
+          () => undefined,
+        );
+        if (!loop) {
+          res.writeHead(404, { "Content-Type": "text/plain" }).end("Not Found");
+          return true;
+        }
+        res
+          .writeHead(200, { ...LOOP_HEADERS, "Content-Length": loop.byteLength })
+          .end(req.method === "HEAD" ? undefined : loop);
         return true;
       }
       page ??= readFile(resolve(params.pluginRoot, "assets", "avatar.html"), "utf8");
@@ -104,9 +125,14 @@ export function createFaceTimeAvatarFeed(params: { pluginRoot: string }) {
       },
       speak(audio, startsAtMs) {
         // Analysis keeps the loudness reference current even while nobody is watching.
-        const frames = analyze(audio);
-        if (frames.length > 0) {
-          broadcast({ type: "speak", at: Math.round(startsAtMs), hopMs: LIP_SYNC_HOP_MS, frames });
+        const levels = analyze(audio);
+        if (levels.length > 0) {
+          broadcast({
+            type: "speak",
+            at: Math.round(startsAtMs),
+            hopMs: VOICE_LEVEL_HOP_MS,
+            levels,
+          });
         }
       },
       clear() {

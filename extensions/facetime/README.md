@@ -41,7 +41,8 @@ openclaw gateway restart
 - `src/video-capture.ts` owns the optional call-window capture child and its single
   in-memory frame; `src/talk-vision.ts` owns the model's `facetime_look` tool.
 - `src/avatar-feed.ts` owns the optional `/facetime/avatar` page and its view-only
-  loopback feed; `src/avatar-lipsync.ts` turns model speech into mouth shapes.
+  loopback feed; `src/avatar-voice-level.ts` turns model speech into the level that
+  lights it. `scripts/avatar-loop/` renders the page's loop video.
 
 Carrier hangup is terminal only after a native ended event or stable complete
 topology absence. A helper reply only acknowledges the request. Capture death,
@@ -60,7 +61,7 @@ authentication, and their model and voice defaults.
 `vision.enabled` and `avatar.enabled` default to `false`. Vision lets the agent look
 at the caller's FaceTime video on demand; it needs the `facetime-video-capture`
 native helper and a realtime model that accepts images. The avatar serves a
-lip-synced character for a local OBS browser source. Neither can fail a call. See
+looping abstract head, lit by the agent's voice, for a local OBS browser source. Neither can fail a call. See
 [the design](docs/vision-and-avatar.md) and
 [test plan](docs/vision-and-avatar-test-plan.md).
 

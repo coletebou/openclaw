@@ -76,7 +76,7 @@ it("declares an installed-native Apple Silicon plugin at the current host contra
   }
   const required = [
     "scripts/stage-helper.sh scripts/verify-native-helper.sh doctor-contract-api.ts",
-    "LICENSE THIRD_PARTY_NOTICES.md skills/facetime/SKILL.md assets/avatar.html",
+    "LICENSE THIRD_PARTY_NOTICES.md skills/facetime/SKILL.md assets/avatar.html assets/avatar-loop.mp4",
   ].flatMap((group) => group.split(" "));
   expect(pkg.files).toEqual(expect.arrayContaining(required));
 });

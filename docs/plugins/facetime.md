@@ -191,11 +191,11 @@ when the call ends. Vision needs:
 `facetime.preflight` reports a `video-capture` check when vision is enabled. It does
 not fail preflight.
 
-**Avatar** serves a lip-synced animated character at
+**Avatar** serves a looping abstract head that lights up with the agent's voice at
 `http://127.0.0.1:<gateway port>/facetime/avatar`. Add that URL to OBS as a browser
-source (1280x720, 30 FPS) and select OBS Virtual Camera as FaceTime's video input.
+source (1920x1080, 30 FPS) and select OBS Virtual Camera as FaceTime's video input.
 The page is reachable only from the Mac itself. Add `?demo=1` to preview it without
-a call, and `?offsetMs=<n>` to shift lip sync if the mouth leads or trails the voice.
+a call, and `?offsetMs=<n>` to shift the light if it leads or trails the voice.
 
 ## Prepare the Mac
 
