@@ -65,7 +65,7 @@ describe("FaceTime call trace", () => {
     ]);
   });
 
-  it("shows an interruption: the caller's level, and what was heard and dropped", async () => {
+  it("shows an interruption: the caller's level, and what was heard and dropped", () => {
     const info = vi.fn();
     const trace = createFaceTimeCallTrace({
       callUUID: "98A409DB-DF13-4FD0-9C40-DB707E977FA6",
@@ -80,11 +80,9 @@ describe("FaceTime call trace", () => {
     trace.inputAudio(halfScale(480));
     trace.providerEvent({ direction: "server", type: "input_audio_buffer.speech_started" });
     trace.speechEnded("model audio cleared");
+    // The provider reports the cancelled response after the audio is already gone.
+    trace.speechEnded("response cancelled");
     trace.providerEvent({ direction: "server", type: "error", detail: "rate limited" });
-    await trace.tool("facetime_look", async () => {
-      vi.advanceTimersByTime(35);
-    });
-    await Promise.resolve();
     trace.stop("call media stopped: closed");
 
     expect(info.mock.calls.map(([line]) => String(line).replace(/^.*\+0\.\d\ds /u, ""))).toEqual([
@@ -92,10 +90,41 @@ describe("FaceTime call trace", () => {
       "model audio started",
       "provider server:input_audio_buffer.speech_started in=-6.0/-6.0dBFS 1840ms heard, 2600ms dropped",
       "model audio cleared: 1840ms heard, 2600ms dropped",
+      "response cancelled",
       "provider server:error rate limited",
-      "tool call facetime_look",
-      "tool facetime_look handled in 35ms",
       "call media stopped: closed",
+    ]);
+  });
+
+  it("times a tool from its call to its result, however late the result arrives", () => {
+    const info = vi.fn();
+    const trace = createFaceTimeCallTrace({
+      callUUID: "98A409DB-DF13-4FD0-9C40-DB707E977FA6",
+      logger: { info, warn: vi.fn(), error: vi.fn() },
+    });
+    const call = {
+      type: "tool.call",
+      callId: "call-7",
+      payload: { name: "openclaw_agent_consult" },
+    };
+
+    // The event is passed through untouched for the talk session to record.
+    expect(trace.talkEvent(call)).toBe(call);
+    trace.talkEvent({ type: "tool.progress", callId: "call-7" });
+    vi.advanceTimersByTime(4_200);
+    trace.talkEvent({ type: "tool.result", callId: "call-7", payload: {} });
+    trace.talkEvent({ type: "tool.error", callId: "call-7" });
+    trace.talkEvent({ type: "tool.call", callId: "call-8", payload: { name: "facetime_look" } });
+    vi.advanceTimersByTime(12);
+    trace.talkEvent({ type: "tool.error", callId: "call-8" });
+    trace.stop("call media stopped: closed");
+
+    expect(info.mock.calls.map(([line]) => String(line).replace(/^\S+ trace \S+ /u, ""))).toEqual([
+      "+0.00s tool call openclaw_agent_consult",
+      "+4.20s tool openclaw_agent_consult answered after 4200ms",
+      "+4.20s tool call facetime_look",
+      "+4.21s tool facetime_look failed after 12ms",
+      "+4.21s call media stopped: closed",
     ]);
   });
 });

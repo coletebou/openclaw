@@ -245,7 +245,7 @@ export async function startFaceTimeTalkDriver(params: {
     return await closePromise;
   };
 
-  const remember = (input: TalkEventInput) => talk.emit(input);
+  const remember = (input: TalkEventInput) => talk.emit(trace.talkEvent(input));
   const ensureTurn = () => talk.ensureTurn({ payload: { callUUID: params.callUUID } }).turnId;
   const finishOutputAudio = (reason: string) => {
     talk.finishOutputAudio({ payload: { reason } });
@@ -595,11 +595,9 @@ export async function startFaceTimeTalkDriver(params: {
           finishResponseOutcome(outcome, true);
         },
         onToolCall: (event) =>
-          trace.tool(event.name, () =>
-            vision && event.name === FACETIME_LOOK_TOOL_NAME && !stopped && !mediaSuspended
-              ? vision.handleLook(event)
-              : consultController.handleToolCall(event),
-          ),
+          vision && event.name === FACETIME_LOOK_TOOL_NAME && !stopped && !mediaSuspended
+            ? vision.handleLook(event)
+            : consultController.handleToolCall(event),
         onReady() {
           trace.event("provider session ready");
           if (!stopped && !mediaSuspended) {
