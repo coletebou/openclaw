@@ -190,7 +190,8 @@ fail or end a call: if one stops working, the call continues as a voice call.
 their screen while they share it. The agent looks when you show it something or ask
 what it sees; each look sends one frame of the call window to the realtime voice
 provider. Frames are kept in memory only, replaced every two seconds, and dropped
-when the call ends. Vision needs:
+when the call ends, unless [call records](#call-timeline-and-records) are on. Vision
+needs:
 
 - a native companion that includes the `facetime-video-capture` helper,
 - a realtime model that accepts images, such as `gpt-realtime-2.1` or
@@ -205,6 +206,38 @@ not fail preflight.
 source (1920x1080, 30 FPS) and select OBS Virtual Camera as FaceTime's video input.
 The page is reachable only from the Mac itself. Add `?demo=1` to preview it without
 a call, and `?offsetMs=<n>` to shift the light if it leads or trails the voice.
+
+### Call timeline and records
+
+Every call writes a timeline to the Gateway log, for tuning how the call feels. Each
+line starts with `[facetime] trace <call> +<seconds>` and records one thing: the
+provider hearing the caller start or stop speaking, the model's audio starting,
+finishing or being cut (with how much was heard and how much was dropped), a tool
+call and how long it took, and once a second the audio levels in each direction as
+RMS and peak dBFS. These lines hold timings, sizes and levels. They never hold what
+was said or seen.
+
+To keep the words and pictures as well, turn on call records:
+
+```json5
+{
+  plugins: {
+    entries: {
+      facetime: {
+        config: {
+          callRecords: { enabled: true },
+        },
+      },
+    },
+  },
+}
+```
+
+Each call then gets a folder under
+`~/Library/Application Support/OpenClaw/FaceTime/calls/`, named by start time and
+call. It holds `timeline.log`, the same timeline plus what the caller and the agent
+said, and `look-NN.jpg`, each frame the agent looked at. The folders stay on the Mac,
+readable only by its user, and the newest 50 calls are kept.
 
 ## Prepare the Mac
 

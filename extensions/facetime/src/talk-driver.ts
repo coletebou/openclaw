@@ -18,7 +18,9 @@ import {
 import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import { startFaceTimeAudioPump } from "./audio-pump.js";
 import type { FaceTimeAvatarSink } from "./avatar-feed.js";
+import { createFaceTimeCallTrace } from "./call-trace.js";
 import type { FaceTimeConfig } from "./config.js";
+import { resolveFaceTimeCallRecordsDir } from "./plugin-paths.js";
 import { createFaceTimeConsultController } from "./talk-consult-controller.js";
 import {
   agentIdFromSessionKey,
@@ -99,6 +101,11 @@ export async function startFaceTimeTalkDriver(params: {
   let mediaSuspended = false;
   let bridge: RealtimeVoiceBridgeSession | undefined;
   let vision: ReturnType<typeof createFaceTimeVision> | undefined;
+  const trace = createFaceTimeCallTrace({
+    callUUID: params.callUUID,
+    logger: params.logger,
+    recordsDir: params.config.callRecords.enabled ? resolveFaceTimeCallRecordsDir() : undefined,
+  });
   let lastInputAudioStatusAt = 0;
   let callMediaTimestampMs = 0;
   let modelMediaGeneration = 1;
@@ -181,6 +188,8 @@ export async function startFaceTimeTalkDriver(params: {
     // callback must not report a second failure or restart any media path.
     mediaSuspended = true;
     activated = false;
+    // Every way a call's media ends passes here, so the meter can never outlive the call.
+    trace.stop(`call media stopped: ${reason}`);
     initialGreeting.cancel();
     providerReady = false;
     mediaSuspensionError ??= new Error(`FaceTime model media suspended: ${reason}`);
@@ -219,6 +228,7 @@ export async function startFaceTimeTalkDriver(params: {
       return await closePromise;
     }
     closePromise = (async () => {
+      trace.event(`call session closed: ${reason}`);
       const mediaStop = suspendMedia(reason);
       stopped = true;
       try {
@@ -258,6 +268,7 @@ export async function startFaceTimeTalkDriver(params: {
     );
     bridge?.setMediaTimestamp(Math.floor(callMediaTimestampMs));
     rememberSettledResponse(current.id);
+    trace.speechEnded("model finished speaking");
     resetResponsePlayback();
     finishOutputAudio("playback-drained");
     endTurn("completed");
@@ -283,6 +294,7 @@ export async function startFaceTimeTalkDriver(params: {
       return;
     }
     if (response) {
+      trace.speechEnded("response superseded");
       pump?.clearOutputAudio();
       finishOutputAudio("response-superseded");
       endTurn("response-superseded");
@@ -318,6 +330,7 @@ export async function startFaceTimeTalkDriver(params: {
       }
       return;
     }
+    trace.speechEnded(`response ${outcome.status}`);
     pump?.clearOutputAudio();
     if (outcome.status === "failed" || outcome.status === "incomplete") {
       remember({ type: "session.error", payload: outcome, final: true });
@@ -330,6 +343,7 @@ export async function startFaceTimeTalkDriver(params: {
   const resetProviderContinuity = () => {
     modelMediaGeneration += 1;
     consultController.abortForClose();
+    trace.speechEnded("provider continuity reset");
     pump?.clearOutputAudio();
     resetResponsePlayback();
     finishOutputAudio("continuity-reset");
@@ -365,6 +379,7 @@ export async function startFaceTimeTalkDriver(params: {
       if (stopped || mediaSuspended || !activated) {
         return;
       }
+      trace.inputAudio(audio);
       callMediaTimestampMs += audio.byteLength / 2 / 24;
       if (!talk.outputAudioActive) {
         bridge?.setMediaTimestamp(Math.floor(callMediaTimestampMs));
@@ -401,6 +416,7 @@ export async function startFaceTimeTalkDriver(params: {
     onOutputAudio: params.avatar?.speak,
     onOutputCleared: params.avatar?.clear,
   });
+  trace.start({ heardMs: playedCurrentResponseMs, queuedMs: () => pump.queuedAudioFrames() / 24 });
   const providerConnect = (async () => {
     let removeAbortListener: (() => void) | undefined;
     const interrupted = new Promise<never>((_resolve, reject) => {
@@ -439,6 +455,7 @@ export async function startFaceTimeTalkDriver(params: {
             getBridge: () => bridge,
             ensureTurn,
             remember,
+            trace: trace.looked,
           });
         } else {
           params.logger.warn(
@@ -479,6 +496,7 @@ export async function startFaceTimeTalkDriver(params: {
             if (!response) {
               startResponse();
             }
+            trace.outputAudio(audio);
             talk.startOutputAudio({ turnId, payload: { callUUID: params.callUUID } });
             remember({
               type: "output.audio.delta",
@@ -492,6 +510,7 @@ export async function startFaceTimeTalkDriver(params: {
             if (stopped || mediaSuspended) {
               return;
             }
+            trace.speechEnded("model audio cleared");
             pump?.clearOutputAudio();
             resetResponsePlayback();
             finishOutputAudio("clear");
@@ -529,6 +548,7 @@ export async function startFaceTimeTalkDriver(params: {
             });
           }
           if (final) {
+            trace.said(role, text);
             appendTranscript({ role, text });
           }
         },
@@ -536,6 +556,7 @@ export async function startFaceTimeTalkDriver(params: {
           if (stopped || mediaSuspended) {
             return;
           }
+          trace.providerEvent(event);
           if (!(event.direction === "client" && event.type === "input_audio_buffer.append")) {
             remember({
               type: "health.changed",
@@ -573,10 +594,13 @@ export async function startFaceTimeTalkDriver(params: {
           finishResponseOutcome(outcome, true);
         },
         onToolCall: (event) =>
-          vision && event.name === FACETIME_LOOK_TOOL_NAME && !stopped && !mediaSuspended
-            ? vision.handleLook(event)
-            : consultController.handleToolCall(event),
+          trace.tool(event.name, () =>
+            vision && event.name === FACETIME_LOOK_TOOL_NAME && !stopped && !mediaSuspended
+              ? vision.handleLook(event)
+              : consultController.handleToolCall(event),
+          ),
         onReady() {
+          trace.event("provider session ready");
           if (!stopped && !mediaSuspended) {
             remember({ type: "session.ready", payload: { callUUID: params.callUUID } });
             providerReadyDeferred.resolve();
@@ -697,6 +721,7 @@ export async function startFaceTimeTalkDriver(params: {
         return;
       }
       activated = true;
+      trace.event("call audio active: the caller can hear the agent");
       params.avatar?.setCallActive(true);
       initialGreeting.schedule();
     },

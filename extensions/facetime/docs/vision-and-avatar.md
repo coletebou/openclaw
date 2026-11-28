@@ -167,7 +167,9 @@ takes images directly.
 
 - Frames exist only in the Gateway's memory. One frame at a time, replaced every
   2 seconds, dropped when the call window leaves the screen and when the call ends.
-- Nothing writes a frame to disk: not the helper, not the plugin, not the logs.
+- Nothing writes a frame to disk: not the helper, not the plugin, not the logs. The one
+  exception is opt-in: with `callRecords.enabled`, each frame the agent looked at is saved
+  in that call's record folder on the Mac, and the newest 50 calls are kept.
   Talk events and logs record byte counts and frame age only.
 - A frame leaves the machine only when the model looks, and only to the configured
   realtime provider, over the session's existing connection.

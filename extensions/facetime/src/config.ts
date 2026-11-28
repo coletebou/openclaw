@@ -70,6 +70,8 @@ export function resolveFaceTimeConfig(input: unknown) {
     // Both features change what leaves and enters the call, so they stay opt-in.
     vision: { enabled: asBoolean(asRecord(raw.vision).enabled) ?? false },
     avatar: { enabled: asBoolean(asRecord(raw.avatar).enabled) ?? false },
+    // Keeps what was said and seen on this Mac's disk, so it is opt-in as well.
+    callRecords: { enabled: asBoolean(asRecord(raw.callRecords).enabled) ?? false },
   };
 }
 

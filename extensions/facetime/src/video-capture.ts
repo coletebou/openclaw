@@ -108,8 +108,10 @@ export function startFaceTimeVideoCapture(params: {
         // The call window left the screen. Drop the last view instead of letting it go stale.
         latest = undefined;
         unavailable = "no FaceTime call window is visible on the Mac right now";
+        params.logger.info(`[facetime] ${line.trim()}`);
       } else if (line.trim()) {
-        params.logger.debug?.(`[facetime] ${line.trim()}`);
+        // The helper reports state changes only: started, window found, window lost.
+        params.logger.info(`[facetime] ${line.trim()}`);
       }
     }
   });

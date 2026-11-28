@@ -14,6 +14,8 @@ export function createFaceTimeVision(params: {
   getBridge: () => RealtimeVoiceBridgeSession | undefined;
   ensureTurn: () => string;
   remember: (input: TalkEventInput) => void;
+  /** One entry per look for the call timeline, with the frame the model was shown. */
+  trace: (detail: string, jpeg?: Buffer) => void;
 }) {
   const capture = startFaceTimeVideoCapture({
     captureBinary: params.captureBinary,
@@ -44,6 +46,14 @@ export function createFaceTimeVision(params: {
               }
             : { ok: false, error: "this voice session cannot receive images" }
           : { ok: false, error: view.unavailable };
+      if ("frameAgeMs" in result && "frame" in view) {
+        params.trace(
+          `look attached a frame: ${view.frame.jpeg.byteLength} bytes, ${result.frameAgeMs}ms old`,
+          view.frame.jpeg,
+        );
+      } else {
+        params.trace(`look had no view: ${"error" in result ? result.error : "unknown"}`);
+      }
       try {
         await bridge?.submitToolResult(callId, result);
         params.remember({

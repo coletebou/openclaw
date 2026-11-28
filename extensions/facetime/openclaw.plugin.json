@@ -60,6 +60,13 @@
         "properties": {
           "enabled": { "type": "boolean", "default": false }
         }
+      },
+      "callRecords": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean", "default": false }
+        }
       }
     }
   },
@@ -80,8 +87,13 @@
       "advanced": true
     },
     "avatar.enabled": {
-      "label": "Lip-synced Avatar",
-      "help": "Serves an animated avatar at /facetime/avatar on this Gateway for a local OBS browser source. Loopback only.",
+      "label": "Voice-lit Avatar",
+      "help": "Serves a looping avatar that lights up with the agent's voice at /facetime/avatar on this Gateway, for a local OBS browser source. Loopback only.",
+      "advanced": true
+    },
+    "callRecords.enabled": {
+      "label": "Keep Call Records",
+      "help": "Saves each call's timeline, what the caller and the agent said, and the frames the agent looked at, in a folder on this Mac. The newest 50 calls are kept.",
       "advanced": true
     }
   },
