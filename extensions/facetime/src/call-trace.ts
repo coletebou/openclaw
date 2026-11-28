@@ -85,6 +85,7 @@ export function createFaceTimeCallTrace(params: {
   let looks = 0;
   let stopped = false;
   let speaking = false;
+  const tools = new Map<string, { name: string; calledAt: number }>();
   let playback: { heardMs: () => number; queuedMs: () => number } | undefined;
   // What cutting the model off costs: how much of the response was heard, and how much
   // queued speech is thrown away.
@@ -144,8 +145,10 @@ export function createFaceTimeCallTrace(params: {
     },
     /** The model's speech ended: finished, interrupted, superseded or failed. */
     speechEnded: (how: string) => {
+      // An interruption clears the audio first and the provider reports the cancelled
+      // response afterwards. Only the first of the two still has speech to account for.
+      write(speaking ? `${how}: ${cutSpeech()}` : how);
       speaking = false;
-      write(`${how}: ${cutSpeech()}`);
     },
     /**
      * One line per provider event. Streaming deltas and audio appends arrive many times a
@@ -163,15 +166,31 @@ export function createFaceTimeCallTrace(params: {
           : "";
       write(`provider ${event.direction}:${event.type}${extra}`);
     },
-    /** Runs a tool handler between a "called" line and a "handled in" line. */
-    tool: <T>(name: string, run: () => T): T => {
-      const calledAt = Date.now();
-      write(`tool call ${name}`);
-      const handled = run();
-      void Promise.resolve(handled)
-        .catch(() => undefined)
-        .then(() => write(`tool ${name} handled in ${Date.now() - calledAt}ms`));
-      return handled;
+    /**
+     * Times tools from the talk events the call already emits, and passes the event through.
+     * A consult returns to the model at once and delivers its answer later, so only its
+     * result event marks the end.
+     */
+    talkEvent: <T extends { type: string; callId?: string; payload?: unknown }>(event: T): T => {
+      const callId = event.callId;
+      if (callId && event.type === "tool.call") {
+        const payload = event.payload;
+        const name =
+          typeof payload === "object" && payload !== null && "name" in payload
+            ? String(payload.name)
+            : "tool";
+        tools.set(callId, { name, calledAt: Date.now() });
+        write(`tool call ${name}`);
+      } else if (callId && (event.type === "tool.result" || event.type === "tool.error")) {
+        const tool = tools.get(callId);
+        if (tool) {
+          tools.delete(callId);
+          write(
+            `tool ${tool.name} ${event.type === "tool.error" ? "failed" : "answered"} after ${Date.now() - tool.calledAt}ms`,
+          );
+        }
+      }
+      return event;
     },
     /** A finished utterance. Its words go to the call record only. */
     said: (role: string, text: string) => {
