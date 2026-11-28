@@ -30,14 +30,17 @@ describe("facetime config", () => {
     const defaults = resolveFaceTimeConfig({ ownerHandles: ["omar@example.com"] });
     expect(defaults.vision).toEqual({ enabled: false });
     expect(defaults.avatar).toEqual({ enabled: false });
+    expect(defaults.callRecords).toEqual({ enabled: false });
 
     const enabled = resolveFaceTimeConfig({
       ownerHandles: ["omar@example.com"],
       vision: { enabled: true },
       avatar: { enabled: true },
+      callRecords: { enabled: true },
     });
     expect(enabled.vision.enabled).toBe(true);
     expect(enabled.avatar.enabled).toBe(true);
+    expect(enabled.callRecords.enabled).toBe(true);
   });
 
   it("requires at least one owner handle", () => {

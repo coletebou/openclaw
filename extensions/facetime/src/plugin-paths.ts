@@ -27,6 +27,11 @@ function resolveHelperStateFile(name: "helper-ipc-key" | "helper-build.sha256"):
   return resolve(homedir(), "Library", "Application Support", "OpenClaw", "FaceTime", name);
 }
 
+/** Where `callRecords.enabled` keeps each call's timeline, words and looked-at frames. */
+export function resolveFaceTimeCallRecordsDir(): string {
+  return resolve(homedir(), "Library", "Application Support", "OpenClaw", "FaceTime", "calls");
+}
+
 async function resolveNativeInstall(): Promise<{ buildId: string; capture: string }> {
   for (const directory of NATIVE_DIRS) {
     const capture = resolve(directory, "facetime-audio-capture");
