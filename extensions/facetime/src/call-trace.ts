@@ -7,6 +7,18 @@ const METER_INTERVAL_MS = 1_000;
 const SILENCE_DBFS = -90;
 // Call records hold what was said and seen. Only the newest calls are kept.
 const MAX_CALL_RECORDS = 50;
+// The provider events that mark turn-taking or a change in the session. Everything else a
+// provider emits (a line per audio packet or per token, on some connections) stays out.
+const TIMELINE_PROVIDER_EVENT = new RegExp(
+  "^(?:error" +
+    "|input_audio_buffer\\.(?:speech_started|speech_stopped|committed|cleared|timeout_triggered)" +
+    "|output_audio_buffer\\.(?:started|stopped|cleared)" +
+    "|response\\.(?:create|created|cancel|done)" +
+    "|conversation\\.item\\.truncated?" +
+    "|session\\.(?:created|updated|close|rotation|rotation\\.ready|continuity\\.reset)" +
+    "|tool_call\\.arguments\\.rejected)$",
+  "u",
+);
 
 type Level = { squares: number; peak: number; samples: number };
 
@@ -151,12 +163,11 @@ export function createFaceTimeCallTrace(params: {
       speaking = false;
     },
     /**
-     * One line per provider event. Streaming deltas and audio appends arrive many times a
-     * second and say nothing about turn-taking, so they are left out. Speech start and stop
-     * carry the caller's level since the last meter line and what the model was doing.
+     * One line per provider event that marks turn-taking or a session change. Speech start
+     * and stop carry the caller's level since the last meter line and what the model was doing.
      */
     providerEvent: (event: { direction: string; type: string; detail?: string }) => {
-      if (event.type.endsWith(".delta") || event.type.endsWith(".append")) {
+      if (!TIMELINE_PROVIDER_EVENT.test(event.type)) {
         return;
       }
       const extra = event.type.startsWith("input_audio_buffer.speech_")
