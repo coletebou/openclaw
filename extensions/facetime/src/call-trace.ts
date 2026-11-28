@@ -137,10 +137,14 @@ export function createFaceTimeCallTrace(params: {
       }
       write("call session started");
       meter = setInterval(() => {
+        const queuedMs = Math.round(source.queuedMs());
+        // A second in which no audio moved has nothing to report. During a call the caller's
+        // audio never stops arriving, so this only happens before it starts or after it ends.
+        if (input.samples === 0 && output.samples === 0 && queuedMs === 0) {
+          return;
+        }
         // in: caller audio as sent to the model. out: model audio as queued for the caller.
-        write(
-          `levels in=${describe(input)} out=${describe(output)} queued=${Math.round(source.queuedMs())}ms`,
-        );
+        write(`levels in=${describe(input)} out=${describe(output)} queued=${queuedMs}ms`);
         input = emptyLevel();
         output = emptyLevel();
       }, METER_INTERVAL_MS);
@@ -164,14 +168,15 @@ export function createFaceTimeCallTrace(params: {
     },
     /**
      * One line per provider event that marks turn-taking or a session change. Speech start
-     * and stop carry the caller's level since the last meter line and what the model was doing.
+     * and stop carry the caller's level since the last meter line and, when they cut the
+     * model off, what that cost.
      */
     providerEvent: (event: { direction: string; type: string; detail?: string }) => {
       if (!TIMELINE_PROVIDER_EVENT.test(event.type)) {
         return;
       }
       const extra = event.type.startsWith("input_audio_buffer.speech_")
-        ? ` in=${describe(input)} ${cutSpeech()}`
+        ? ` in=${describe(input)}${speaking ? ` ${cutSpeech()}` : ""}`
         : event.type === "error" && event.detail
           ? ` ${event.detail}`
           : "";

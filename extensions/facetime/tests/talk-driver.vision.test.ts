@@ -41,6 +41,10 @@ describe("FaceTime talk driver vision", () => {
     );
     expect(mocks.sessionParams?.tools?.map((tool) => tool.name)).toContain("facetime_look");
     expect(mocks.sessionParams?.instructions).toContain("Vision:");
+    // The look answers in milliseconds, so a spoken lead-in would only be cut off by the answer.
+    expect(mocks.sessionParams?.instructions).toContain(
+      "facetime_look answers at once. Call it before you say anything",
+    );
 
     await mocks.sessionParams?.onToolCall(look);
 

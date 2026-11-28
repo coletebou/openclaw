@@ -68,6 +68,7 @@ export function buildRealtimeInstructions(params: {
         "Vision:",
         `- You can see the caller's FaceTime video by calling ${FACETIME_LOOK_TOOL_NAME}. Each call shows you one current frame of their camera, or of their screen while they share it.`,
         `- Call ${FACETIME_LOOK_TOOL_NAME} yourself, without delegating, when the caller shows you something, shares their screen, refers to something visible, or asks what you see. Call it again whenever the view may have changed.`,
+        `- ${FACETIME_LOOK_TOOL_NAME} answers at once. Call it before you say anything, with no "one sec" or other lead-in, then answer from what you see.`,
         "- Never describe or guess visual details you have not just looked at. If no frame is available, say you cannot see anything right now.",
       ].join("\n")
     : undefined;

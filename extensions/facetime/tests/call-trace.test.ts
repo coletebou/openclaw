@@ -65,6 +65,26 @@ describe("FaceTime call trace", () => {
     ]);
   });
 
+  it("says nothing for a second in which no audio moved", () => {
+    const info = vi.fn();
+    const trace = createFaceTimeCallTrace({
+      callUUID: "98A409DB-DF13-4FD0-9C40-DB707E977FA6",
+      logger: { info, warn: vi.fn(), error: vi.fn() },
+    });
+
+    trace.start({ heardMs: () => 0, queuedMs: () => 0 });
+    vi.advanceTimersByTime(3_000);
+    trace.inputAudio(halfScale(480));
+    vi.advanceTimersByTime(3_000);
+    trace.stop("call media stopped: closed");
+
+    expect(info.mock.calls).toEqual([
+      ["[facetime] trace 98a409db +0.00s call session started"],
+      ["[facetime] trace 98a409db +4.00s levels in=-6.0/-6.0dBFS out=none queued=0ms"],
+      ["[facetime] trace 98a409db +6.00s call media stopped: closed"],
+    ]);
+  });
+
   it("shows an interruption: the caller's level, and what was heard and dropped", () => {
     const info = vi.fn();
     const trace = createFaceTimeCallTrace({
@@ -89,6 +109,8 @@ describe("FaceTime call trace", () => {
     trace.speechEnded("model audio cleared");
     // The provider reports the cancelled response after the audio is already gone.
     trace.speechEnded("response cancelled");
+    // With nothing playing, the caller stopping costs nothing and says so by omission.
+    trace.providerEvent({ direction: "server", type: "input_audio_buffer.speech_stopped" });
     trace.providerEvent({ direction: "server", type: "error", detail: "rate limited" });
     trace.stop("call media stopped: closed");
 
@@ -98,6 +120,7 @@ describe("FaceTime call trace", () => {
       "provider server:input_audio_buffer.speech_started in=-6.0/-6.0dBFS 1840ms heard, 2600ms dropped",
       "model audio cleared: 1840ms heard, 2600ms dropped",
       "response cancelled",
+      "provider server:input_audio_buffer.speech_stopped in=-6.0/-6.0dBFS",
       "provider server:error rate limited",
       "call media stopped: closed",
     ]);
