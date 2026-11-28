@@ -75,8 +75,15 @@ describe("FaceTime call trace", () => {
 
     trace.outputAudio(Buffer.alloc(960));
     trace.outputAudio(Buffer.alloc(960));
-    trace.providerEvent({ direction: "server", type: "response.output_audio.delta" });
-    trace.providerEvent({ direction: "client", type: "input_audio_buffer.append" });
+    // Per-token, per-chunk and per-packet events never reach the timeline.
+    for (const type of [
+      "response.output_audio.delta",
+      "input_audio_buffer.append",
+      "output_audio.rtp",
+      "response.content_part.added",
+    ]) {
+      trace.providerEvent({ direction: "server", type });
+    }
     trace.inputAudio(halfScale(480));
     trace.providerEvent({ direction: "server", type: "input_audio_buffer.speech_started" });
     trace.speechEnded("model audio cleared");
